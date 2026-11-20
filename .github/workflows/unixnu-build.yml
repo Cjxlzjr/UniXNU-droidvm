@@ -108,9 +108,9 @@ jobs:
             echo "- Source branch: \`wip/hackintosh\`"
             echo ""
             echo "### Disk after build"
-            echo "```"
+            printf '%s\n' '```'
             cat diagnostics/storage.txt
-            echo "```"
+            printf '%s\n' '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload diagnostics
