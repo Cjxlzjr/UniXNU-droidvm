@@ -4,13 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: "Build through this step (setup downloads IPSW inputs; kernel compiles XNU and all prerequisites)"
+        description: "Build through this step (images produces the complete iPadOS 17 release)"
         type: choice
         options:
           - setup
           - kernel
+          - package
+          - images
         default: kernel
         required: true
+      export_recipient:
+        description: "Public age recipient (age1…); required for images, optional for kernel"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -26,7 +32,9 @@ jobs:
     timeout-minutes: 330
     env:
       STAGE: ${{ inputs.stage }}
+      EXPORT_RECIPIENT: ${{ inputs.export_recipient }}
       GH_TOKEN: ${{ github.token }}
+      UNIXNU_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
     steps:
       - name: Check out device repository
         uses: actions/checkout@v4
@@ -45,6 +53,17 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           brew install llvm lld cmake ninja unifdef mtools dtc
+          if [[ "$STAGE" == images ]]; then
+            brew install bison flex glslang gnu-sed pkgconf
+          fi
+          if [[ -n "$EXPORT_RECIPIENT" || "$STAGE" == images ]]; then
+            if [[ ! "$EXPORT_RECIPIENT" =~ ^age1[0-9a-z]{58}$ ]]; then
+              echo '::error::Provide an age 1 public recipient to export artifacts.'
+              exit 1
+            fi
+            brew install age
+            printf '' | age --encrypt --recipient "$EXPORT_RECIPIENT" >/dev/null
+          fi
           echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
           echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
           df -h / /private/tmp
@@ -54,6 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
+          git -C UniXNU checkout --detach "$UNIXNU_REVISION"
           git -C UniXNU submodule update --init --recursive --filter=blob:none
           echo "UniXNU commit: $(git -C UniXNU rev-parse HEAD)"
           echo "Device commit: $(git -C device rev-parse HEAD)"
@@ -64,7 +84,7 @@ jobs:
           set -euo pipefail
           python3 device/scripts/build-droidvm-all.py --list
           case "$STAGE" in
-            setup|kernel) ;;
+            setup|kernel|package|images) ;;
             *) echo "::error::Unsupported stage: $STAGE"; exit 1 ;;
           esac
 
@@ -74,17 +94,86 @@ jobs:
           set -euo pipefail
           mkdir -p diagnostics
           echo "Starting UniXNU build through: $STAGE"
-          python3 device/scripts/build-droidvm-all.py --to "$STAGE" 2>&1 | tee diagnostics/build.log
+          if [[ "$STAGE" == images ]]; then
+            # Use a per-release virtual platform seed, independent of the phone.
+            umask 077
+            UNIXNU_UNIQUE_CHIP_ID="$(openssl rand -hex 8)"
+            printf '%s\n' "$UNIXNU_UNIQUE_CHIP_ID" > "$RUNNER_TEMP/unique-chip-id.txt"
+            echo "::add-mask::$UNIXNU_UNIQUE_CHIP_ID"
+            export UNIXNU_UNIQUE_CHIP_ID
+            python3 device/scripts/build-droidvm-all.py --to "$STAGE" 2>&1 | \
+              perl -pe 'BEGIN { $| = 1 } s/\Q$ENV{UNIXNU_UNIQUE_CHIP_ID}\E/[platform seed]/g' | tee diagnostics/build.log
+          else
+            python3 device/scripts/build-droidvm-all.py --to "$STAGE" 2>&1 | tee diagnostics/build.log
+          fi
 
       - name: Check kernel output
-        if: ${{ success() && inputs.stage == 'kernel' }}
+        if: ${{ success() && inputs.stage != 'setup' }}
         shell: bash
         run: |
           set -euo pipefail
           test -s UniXNU/out/droidvm/kernel/kernel.macho
           ls -lh UniXNU/out/droidvm/kernel/kernel.macho
-          file UniXNU/out/droidvm/kernel/kernel.macho
+          file UniXNU/out/droidvm/kernel/kernel.macho | tee diagnostics/kernel-format.txt
+          grep -Fq 'Mach-O 64-bit executable arm64' diagnostics/kernel-format.txt
           shasum -a 256 UniXNU/out/droidvm/kernel/kernel.macho
+
+      - name: Check UEFI loaders
+        if: ${{ success() && (inputs.stage == 'package' || inputs.stage == 'images') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd UniXNU/out/droidvm/package/Build/Out/AARCH64-DEBUG
+          for loader in UniXNU.efi DarwinBoot.efi; do
+            test -s "$loader"
+            file "$loader"
+            shasum -a 256 "$loader"
+          done
+
+      - name: Verify and encrypt release
+        if: ${{ success() && inputs.stage == 'images' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=UniXNU/out/droidvm/release
+          python3 - "$release" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          release = Path(sys.argv[1])
+          files = json.loads((release / 'release.json').read_text())['files']
+          expected = {'droidvm-disk.img', 'kernel.macho', 'os.img', 'systemos.img'}
+          if files.keys() != expected:
+              sys.exit(f'Unexpected release files: {sorted(files)}')
+          for name, record in files.items():
+              path = release / name
+              size = path.stat().st_size
+              with path.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              if size <= 0 or size != record['bytes'] or digest != record['sha256']:
+                  sys.exit(f'Release verification failed for {name}')
+              print(f'{digest}  {name}  ({size} bytes)')
+          PY
+          MTOOLS_SKIP_CHECK=1 mdir -i "$release/droidvm-disk.img" \
+            ::/EFI/BOOT/BOOTAA64.EFI ::/EFI/UniXNU/Payloads/DarwinBoot.efi
+          cp "$release/release.json" diagnostics/release.json
+          df -h / /private/tmp
+          tar -czf - -C "$release" release.json droidvm-disk.img kernel.macho os.img systemos.img \
+            -C "$RUNNER_TEMP" unique-chip-id.txt | \
+            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/unixnu-release.tar.gz.age"
+          shasum -a 256 "$RUNNER_TEMP/unixnu-release.tar.gz.age"
+
+      - name: Upload encrypted release
+        if: ${{ success() && inputs.stage == 'images' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unixnu-release-encrypted-${{ github.run_number }}
+          path: ${{ runner.temp }}/unixnu-release.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Save diagnostics and disk report
         if: always()
@@ -132,13 +221,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "$ARTIFACT_KEY" ]; then
+          if [[ -n "$EXPORT_RECIPIENT" ]]; then
+            tar -czf - -C UniXNU/out/droidvm kernel | \
+              age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/unixnu-kernel.tar.gz.age"
+          elif [ -z "$ARTIFACT_KEY" ]; then
             echo "::notice::Set repository secret ARTIFACT_KEY to export an encrypted kernel; no binary uploaded."
             exit 0
+          else
+            tar -czf - -C UniXNU/out/droidvm kernel | \
+              openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ARTIFACT_KEY \
+                -out "$RUNNER_TEMP/unixnu-kernel.tar.gz.enc"
           fi
-          tar -czf - -C UniXNU/out/droidvm kernel | \
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ARTIFACT_KEY \
-              -out "$RUNNER_TEMP/unixnu-kernel.tar.gz.enc"
           echo "Encrypted kernel ready."
 
       - name: Upload encrypted kernel
@@ -146,7 +239,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unixnu-kernel-encrypted-${{ github.run_number }}
-          path: ${{ runner.temp }}/unixnu-kernel.tar.gz.enc
+          path: |
+            ${{ runner.temp }}/unixnu-kernel.tar.gz.age
+            ${{ runner.temp }}/unixnu-kernel.tar.gz.enc
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 7
