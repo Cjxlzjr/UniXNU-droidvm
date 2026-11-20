@@ -122,3 +122,28 @@ int native_ufs_block_authenticates(void *provider, const char *uuid, uint8_t *di
 // needs a definition. The state's ready bit (31) stays clear, so the display never takes that path and keeps its copy.
 volatile uint32_t native_ufs_dpu_state = 0;
 uint32_t native_ufs_dpu_map(unsigned slot, const uint64_t *pages, unsigned count) {(void)slot; (void)pages; (void)count; return 0;}
+
+#if DROIDVM_LEGACY_17
+// The legacy iPadOS 17 board has no Adreno hardware fence counters (its GPU runs via virtio).
+// GopFramebuffer treats a false return as unavailable and uses its regular fallback path.
+#include <stdbool.h>
+#include <stddef.h>
+bool native_adreno_fences(uint32_t *submitted, uint32_t *retired) {
+    if (submitted) *submitted = 0;
+    if (retired) *retired = 0;
+    return false;
+}
+
+// Page inspection is an optional monitor diagnostic implemented by the newer board.
+// Avoid importing private VM-inspection dependencies into the legacy boot path.
+size_t droidvm_page_info(uint64_t address, bool permuted, char *out, size_t cap) {
+    (void)address; (void)permuted;
+    static const char msg[] = "page inspection unavailable in legacy iPadOS 17 build\n";
+    size_t n = 0;
+    if (out && cap) {
+        while (n + 1 < cap && msg[n]) { out[n] = msg[n]; ++n; }
+        out[n] = 0;
+    }
+    return n;
+}
+#endif
