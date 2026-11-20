@@ -25,6 +25,7 @@ if [[ "$stage" == loader ]]; then
 fi
 
 python3 "$device/ios16/verify-kernel.py" "$work/kernel"
+python3 "$device/ios16/verify-efi.py" "$release"
 (cd "$release" && shasum -a 256 -c efi-sha256.txt)
 cd "$core"
 ./unixnu ipsw fetch DeviceTree -D "$device/ios16" --out "$out"

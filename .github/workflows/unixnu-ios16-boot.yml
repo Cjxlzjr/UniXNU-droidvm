@@ -8,6 +8,9 @@ on:
         type: choice
         options: [all, loader, probe, volumes]
         default: all
+      efi_run_id:
+        description: 'Optional successful run ID to reuse the verified iOS 16 EFI artifact'
+        type: string
 
 permissions:
   contents: read
@@ -18,7 +21,7 @@ env:
 
 jobs:
   loader:
-    if: inputs.stage != 'volumes'
+    if: inputs.stage != 'volumes' && (inputs.stage == 'loader' || inputs.efi_run_id == '')
     runs-on: xcode-27
     timeout-minutes: 45
     steps:
@@ -59,10 +62,13 @@ jobs:
           if-no-files-found: ignore
 
   probe:
-    if: inputs.stage == 'all' || inputs.stage == 'probe'
+    if: ${{ !cancelled() && (inputs.stage == 'all' || inputs.stage == 'probe') && (needs.loader.result == 'success' || inputs.efi_run_id != '') }}
     needs: loader
     runs-on: xcode-27
     timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
     env:
       KERNEL_DIR: UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/kernel
     steps:
@@ -80,9 +86,17 @@ jobs:
         with:
           python-version: '3.12'
       - uses: actions/download-artifact@v4
+        if: inputs.efi_run_id == ''
         with:
           name: ios16-efi
           path: boot-probe
+      - uses: actions/download-artifact@v4
+        if: inputs.efi_run_id != ''
+        with:
+          name: ios16-efi
+          path: boot-probe
+          run-id: ${{ inputs.efi_run_id }}
+          github-token: ${{ github.token }}
       - name: Install packaging tools
         run: brew install age mtools
       - name: Identify a reusable kernel checkpoint

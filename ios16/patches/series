@@ -13,6 +13,7 @@ arch:../../../patches/xnu/native-4k-bootstrap-capacity.patch
 arch:../../../patches/xnu/native-4k-user-abi.patch
 arch:../../../patches/xnu/native-arm-pan.patch
 arch:../../../patches/xnu/non-apple-cache-monitor.patch
+arch:../../../patches/xnu/native-dt-panic-region.patch
 component:xnu8796-patches/8796-non-apple-iommu-bootstrap.patch
 arch:../../../patches/xnu/non-apple-pmap-field.patch
 arch:../../../patches/xnu/source-corecrypto14-bootstrap.patch

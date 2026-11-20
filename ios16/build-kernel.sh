@@ -35,3 +35,9 @@ else
   ./unixnu ipsw fetch KernelCache -D "$device" --out "$out"
   ./unixnu build kernel -D "$device" --out "$out"
 fi
+compile_records="$out/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837"
+panic_record=$(find "$compile_records" -name 'pe_init.o.json' -print)
+grep -Fq -- '-DXNU_DT_PANIC_REGION=1' "$panic_record" || {
+  echo 'The compiled kernel must use the DarwinBoot panic region in guest RAM' >&2
+  exit 1
+}
