@@ -14,12 +14,7 @@ diff --git a/meson.build b/meson.build
 diff --git a/src/util/u_endian.h b/src/util/u_endian.h
 --- a/src/util/u_endian.h
 +++ b/src/util/u_endian.h
-@@ -27,7 +27,7 @@
- #ifndef U_ENDIAN_H
- #define U_ENDIAN_H
- 
+@@ -30,2 +30,2 @@
 -#ifdef HAVE_ENDIAN_H
 +#if defined(HAVE_ENDIAN_H) && !defined(__APPLE__)
  #include <endian.h>
- 
- /* glibc */

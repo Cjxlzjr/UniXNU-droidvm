@@ -363,10 +363,7 @@ class Build:
         cache = self.tree / '.cache'
         pins_path = self.tree / 'scripts/data/adreno-compiler-inputs.json'
         pins = json.loads(pins_path.read_text())
-        sdk_patch = '.cache/patches/turnip-darwin-sdk-headers.patch'
-        sdk_patch_path = self.tree / sdk_patch
-        sdk_patch_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(DEVICE / 'patches/mesa/turnip-darwin-sdk-headers.patch', sdk_patch_path)
+        sdk_patch = 'scripts/data/turnip-darwin-sdk-headers.patch'
         if sdk_patch not in pins['patches']:
             pins['patches'].append(sdk_patch)
             pins_path.write_text(json.dumps(pins, indent=2) + '\n')
