@@ -1,0 +1,45 @@
+name: DroidVM Gunyah UEFI Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    env:
+      EDK2_REVISION: ee11a290dc1207270c53eb73f97a9bef92b8e97b
+      EDK2_TARGET: RELEASE
+    steps:
+      - name: Install EDK II build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y acpica-tools build-essential uuid-dev
+
+      - name: Build the Gunyah ECAM firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/edk2-gunyah.git
+          cd edk2-gunyah
+          git checkout --detach "$EDK2_REVISION"
+          ./build.sh -DPCI_CAM_MODE=FALSE
+          test -s edk2-gunyah.fd
+          test -s edk2-gunyah.vars.fd
+          printf '%s\n' "$EDK2_REVISION" > source-commit.txt
+          sha256sum edk2-gunyah.fd edk2-gunyah.vars.fd | tee SHA256SUMS
+
+      - name: Upload Gunyah firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: edk2-gunyah-release-ecam-${{ github.run_number }}
+          path: |
+            edk2-gunyah/edk2-gunyah.fd
+            edk2-gunyah/edk2-gunyah.vars.fd
+            edk2-gunyah/source-commit.txt
+            edk2-gunyah/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
