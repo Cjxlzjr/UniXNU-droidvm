@@ -1,0 +1,4 @@
+# The bundled iPhone X pthread kext matches Darwin 22's callback ABI.
+CONFIG_XNU_SOURCE_PTHREAD=n
+CONFIG_XNU_NATIVE_AES=n
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"

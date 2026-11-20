@@ -1,0 +1,118 @@
+name: UniXNU DroidVM iOS 16
+
+on:
+  push:
+    branches: [wip/hackintosh]
+    paths:
+      - 'ios16/**'
+      - '.github/workflows/unixnu-ios16.yml'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Compile and prelink the iPhone X kernel, or build the native executable only'
+        type: choice
+        options: [kernel, native]
+        default: kernel
+      export_recipient:
+        description: 'Public age recipient for the encrypted kernel'
+        type: string
+        default: 'age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unixnu-ios16-${{ github.ref }}-${{ inputs.stage || 'kernel' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      STAGE: ${{ inputs.stage || 'kernel' }}
+      EXPORT_RECIPIENT: ${{ inputs.export_recipient || 'age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs' }}
+      KERNEL_DIR: UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/kernel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Droid-VM/UniXNU
+          ref: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
+          path: UniXNU
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare macOS tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          brew install llvm lld cmake ninja unifdef age
+          printf '' | age --encrypt --recipient "$EXPORT_RECIPIENT" >/dev/null
+
+      - name: Build the selected iOS 16 stage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          bash device/ios16/build-kernel.sh "$STAGE" UniXNU 2>&1 | tee diagnostics/build.log
+
+      - name: Verify and encrypt kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          file "$KERNEL_DIR/kernel.macho" | tee diagnostics/kernel-format.txt
+          grep -Fq 'Mach-O 64-bit executable arm64' diagnostics/kernel-format.txt
+          python3 - "$KERNEL_DIR" "$STAGE" <<'PY' | tee diagnostics/kernel-sha256.txt >> "$GITHUB_STEP_SUMMARY"
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          directory, stage = Path(sys.argv[1]), sys.argv[2]
+          kernel = directory / 'kernel.macho'
+          with kernel.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          metadata = json.loads(kernel.with_suffix('.json').read_text())
+          if metadata.get('candidate_sha256') != digest:
+              sys.exit('kernel.macho SHA-256 does not match the build record')
+          if stage == 'kernel' and not metadata.get('original_executable_sha256'):
+              sys.exit('Prelink did not record any donor executables')
+          if stage == 'native' and not metadata.get('prelink_skipped'):
+              sys.exit('Missing native-only build record')
+          print(f'iPhone X iOS 16.7.16 (20H392), {stage} stage')
+          print(f'kernel.macho: {kernel.stat().st_size:,} bytes')
+          print(f'SHA-256: {digest}')
+          PY
+          cat diagnostics/kernel-sha256.txt
+          tar -czf - -C "$KERNEL_DIR" kernel.macho kernel.json | \
+            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-kernel.tar.gz.age"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unixnu-ios16-${{ env.STAGE }}-encrypted-${{ github.run_number }}
+          path: ${{ runner.temp }}/ios16-kernel.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unixnu-ios16-logs-${{ github.run_number }}
+          path: |
+            diagnostics/
+            UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7

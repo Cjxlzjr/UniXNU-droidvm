@@ -1,0 +1,60 @@
+schema_version = 2
+
+[board]
+name = "droidvm-ios16"
+description = "DroidVM iPhone X iOS 16 kernel bring-up (crosvm on Gunyah)"
+soc = "crosvm-gunyah"
+soc_source = "crosvm-gunyah"
+os_profile = "ios-16.7.16-20H392"
+
+[components]
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink"]
+
+[kernel]
+defconfig = "droidvm_ios16_defconfig"
+config_fragments = ["arch:configs/common.config"]
+patch_series = ["device:patches/series"]
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:ArmCpu",
+]
+
+[kernel.prelink]
+tool = "kits/XnuPrelink/emit_prelink.py"
+# Darwin 22's makedefs do not emit a separate .noctf executable.
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped"
+slide = "-0x1000000"
+# Bring-up roots from the 20H392 nuwa prelink. APFS and the mobile
+# graphics roots require separate Darwin 22 linkage work.
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.corecrypto",
+  "com.apple.kec.pthread",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+]
