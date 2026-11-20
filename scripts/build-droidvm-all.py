@@ -346,7 +346,7 @@ class Build:
         if not edk2:
             sys.exit('unixnu build package left no out/feeds/mu_basecore-*')
         # the CLANGPDB tools unixnu linked for the package step (Homebrew LLVM's llvm-lib and lld-link beside clang)
-        run(['bash', DEVICE / 'scripts/build-darwinboot-efi.sh', self.tree, edk2[-1], 'DEBUG'],
+        run(['bash', DEVICE / 'scripts/build-darwinboot-efi.sh', self.tree, edk2[-1], 'DEBUG', '--legacy-smp'],
             env=dict(self.env, CLANG_BIN=str(self.work / 'toolchain') + '/'), logfile=self.logs / 'darwinboot.log')
         for name in ('UniXNU.efi', 'DarwinBoot.efi'):
             if not (self.efi_dir() / name).is_file():
@@ -535,8 +535,8 @@ class Build:
             wanted = STEPS[start:end]
         forced = set(self.args.only.split(',')) if self.args.only else (
             set(STEPS[STEPS.index(self.args.from_step):]) if self.args.from_step else set())
-        if wanted == ['plugin'] and not self.stamp('setup').is_file():
-            # The Metal plugin uses the pinned source tree and SDK, independent of the IPSW and guest kernel.
+        if wanted in (['package'], ['plugin']) and not self.stamp('setup').is_file():
+            # The EFI package and Metal plugin can be built from pinned sources without IPSW inputs.
             self.configure_sources()
             self.unixnu_cmd('tree', logfile=self.logs / 'tree.log')
         elif self.stamp('setup').is_file() and 'setup' not in wanted:

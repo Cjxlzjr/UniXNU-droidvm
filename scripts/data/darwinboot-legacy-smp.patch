@@ -1,0 +1,13 @@
+--- a/DarwinBootPkg/Driver/FdtAdt.c
++++ b/DarwinBootPkg/Driver/FdtAdt.c
+@@ -989,7 +989,9 @@
+     Threshold = Next;
+   }
+   for (Index = 0; Index < Count; Index++) {
+-    Types[Index][0] = (Differ && (Capacities[Index] < Threshold)) ? 'E' : 'P';
++    // The legacy BCM2837 XNU has one SMP cluster. Its non-cluster topology
++    // parser interprets a P CPU as physical cluster 1, outside that range.
++    Types[Index][0] = 'S';
+     Types[Index][1] = '\0';
+   }
+   if (EFI_ERROR (Fdt->FindCompatibleNode (Fdt, "arm,gic-v3", &Node)) ||

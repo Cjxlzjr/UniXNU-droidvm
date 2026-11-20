@@ -2,7 +2,7 @@
 # Build DarwinBoot.efi on its own. On a Mu-Silicium board it is part of the firmware volume; a DroidVM
 # guest boots DroidVM's edk2-gunyah instead, so UniXNU loads DarwinBoot from the payload disk.
 #
-#   scripts/build-darwinboot-efi.sh TREE EDK2 [DEBUG|RELEASE]
+#   scripts/build-darwinboot-efi.sh TREE EDK2 [DEBUG|RELEASE] [--legacy-smp]
 #
 # TREE is out/<board>/tree of the unixnu driver, EDK2 the Mu_Basecore checkout "unixnu build package"
 # used (out/feeds/mu_basecore-*). The environment follows UniXNU's package/build.sh, so the BaseTools
@@ -13,13 +13,25 @@ EDK2=$(cd "$2" && pwd)
 TARGET=${3:-DEBUG}
 BUILD_DIR=$(cd "$TREE/.." && pwd)/package
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+DARWINBOOT=$TREE/drivers/DarwinBoot
+case "${4:-}" in
+  "") ;;
+  --legacy-smp)
+    SOURCE=$(mktemp -d "$BUILD_DIR/darwinboot-source.XXXXXX")
+    trap 'rm -rf "$SOURCE"' EXIT
+    cp -R "$DARWINBOOT/DarwinBootPkg" "$SOURCE/"
+    patch -d "$SOURCE" -p1 -i "$TREE/scripts/data/darwinboot-legacy-smp.patch"
+    DARWINBOOT=$SOURCE
+    ;;
+  *) echo "unknown DarwinBoot option: $4" >&2; exit 2 ;;
+esac
 
 if [ ! -x "$EDK2/BaseTools/Source/C/bin/GenFw" ]; then
   echo "error: no BaseTools in $EDK2; run \"unixnu build package\" first" >&2
   exit 1
 fi
 export WORKSPACE=$BUILD_DIR
-export PACKAGES_PATH=$TREE/drivers/DarwinBoot:$TREE/package:$EDK2
+export PACKAGES_PATH=$DARWINBOOT:$TREE/package:$EDK2
 export EDK_TOOLS_PATH=$EDK2/BaseTools
 export CONF_PATH=$BUILD_DIR/Build/Conf
 export PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
