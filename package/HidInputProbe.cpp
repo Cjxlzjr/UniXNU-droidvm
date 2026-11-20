@@ -251,7 +251,10 @@ static void hidWatchStart(void) {
 // for each device it is handed after the start (a virtio-pci function, DroidVMVirtioInput.c); nothing before the first.
 static IOService *volatile native_hid_extras_resource;
 static volatile uint32_t native_hid_extras_busy;
-static bool native_hid_pen_done, native_hid_trackpad_done, native_hid_motion_done;
+static bool native_hid_motion_done;
+#if !DROIDVM_LEGACY_17
+static bool native_hid_pen_done, native_hid_trackpad_done;
+#endif
 #if DROIDVM_INPUT_MOUSE
 static bool native_hid_mouse_done;
 #endif
@@ -264,16 +267,19 @@ extern "C" void native_hid_input_extras(void) {
     IOService *resource=__atomic_load_n(&native_hid_extras_resource,__ATOMIC_ACQUIRE);
     if(!resource)return;
     while(__atomic_exchange_n(&native_hid_extras_busy,1U,__ATOMIC_ACQUIRE))IOSleep(1);
+#if !DROIDVM_LEGACY_17
     if(!native_hid_pen_done && droidvm_pen_present()) {
         native_hid_pen_done=true;
         if(IOService *pen=native_hid_extra_start(native_hid_pen_allocate(),resource))HID_WATCH(pen);
     }
+#endif
 #if DROIDVM_INPUT_MOUSE
     if(!native_hid_mouse_done && droidvm_mouse_present()) {
         native_hid_mouse_done=true;
         if(IOService *mouse=native_hid_extra_start(droidvm_pointer_hid_allocate(false),resource))HID_WATCH(mouse);
     }
 #endif
+#if !DROIDVM_LEGACY_17
     if(!native_hid_trackpad_done && &droidvm_trackpad_hid_allocate && droidvm_trackpad_present()) {
         native_hid_trackpad_done=true;
         native_hid_trackpad_load_status[0]=OSKext::loadKextWithIdentifier("com.apple.driver.AppleTopCaseHIDEventDriver",
@@ -282,9 +288,12 @@ extern "C" void native_hid_input_extras(void) {
             true,false,kOSKextExcludeNone,kOSKextExcludeNone,nullptr);
         if(IOService *trackpad=native_hid_extra_start(droidvm_trackpad_hid_allocate(),resource))HID_WATCH(trackpad);
     }
+#endif
     if(!native_hid_motion_done && droidvm_motion_present()) {
         native_hid_motion_done=true;
+#if !DROIDVM_LEGACY_17
         droidvm_sensor_processor_register();
+#endif
         for(unsigned kind=0;kind<3;++kind)
             if(IOService *motion=native_hid_extra_start(droidvm_motion_hid_allocate(kind),resource))HID_WATCH(motion);
     }
