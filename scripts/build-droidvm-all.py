@@ -361,7 +361,15 @@ class Build:
         recorded patches in .cache/mesa-work, meson and mako in .cache/mesa-venv, bison and flex in .cache/mesa-tools, and the
         pinned metal2vulkan source in .cache/gpu-reference/metal2vulkan."""
         cache = self.tree / '.cache'
-        pins = json.loads((self.tree / 'scripts/data/adreno-compiler-inputs.json').read_text())
+        pins_path = self.tree / 'scripts/data/adreno-compiler-inputs.json'
+        pins = json.loads(pins_path.read_text())
+        sdk_patch = '.cache/patches/turnip-darwin-sdk-headers.patch'
+        sdk_patch_path = self.tree / sdk_patch
+        sdk_patch_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(DEVICE / 'patches/mesa/turnip-darwin-sdk-headers.patch', sdk_patch_path)
+        if sdk_patch not in pins['patches']:
+            pins['patches'].append(sdk_patch)
+            pins_path.write_text(json.dumps(pins, indent=2) + '\n')
         venv = cache / 'mesa-venv'
         if not (venv / 'bin/meson').is_file():
             run(['python3', '-m', 'venv', venv], env=self.env)

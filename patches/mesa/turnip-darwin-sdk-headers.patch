@@ -1,0 +1,25 @@
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -1336,6 +1336,9 @@
+ # TODO: this is very incomplete
+ if ['linux', 'cygwin', 'gnu', 'freebsd', 'gnu/kfreebsd', 'haiku', 'android', 'managarm'].contains(host_machine.system())
+   pre_args += '-D_GNU_SOURCE'
++elif host_machine.system() == 'darwin'
++  # Generated sources can select POSIX mode before including system headers.
++  pre_args += '-D_DARWIN_C_SOURCE'
+ elif host_machine.system() == 'sunos'
+   pre_args += '-D__EXTENSIONS__'
+ elif host_machine.system() == 'windows'
+diff --git a/src/util/u_endian.h b/src/util/u_endian.h
+--- a/src/util/u_endian.h
++++ b/src/util/u_endian.h
+@@ -27,7 +27,7 @@
+ #ifndef U_ENDIAN_H
+ #define U_ENDIAN_H
+ 
+-#ifdef HAVE_ENDIAN_H
++#if defined(HAVE_ENDIAN_H) && !defined(__APPLE__)
+ #include <endian.h>
+ 
+ /* glibc */
