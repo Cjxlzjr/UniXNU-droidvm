@@ -433,7 +433,13 @@ class Build:
                         if 'FAIL' in p.read_text(errors='replace'))
         self.record_check('turnip-host', 'PASS' if status == 0 else 'FAIL ' + ' '.join(failed or ['(see the log)']))
         if not (self.tree / 'build/turnip-darwin-host/plugin_smoke').is_file():
-            sys.exit('the host simulation left no plugin_smoke: ' + str(self.logs / 'turnip-host-check.log'))
+            # Surface the real compilation/test error in the Actions console rather
+            # than only reporting a missing output after the failed subprocess.
+            check_log = self.logs / 'turnip-host-check.log'
+            if check_log.is_file():
+                log('turnip-host-check.log (last 60 lines):')
+                print('\\n'.join(check_log.read_text(errors='replace').splitlines()[-60:]), flush=True)
+            sys.exit('the host simulation left no plugin_smoke: ' + str(check_log))
         self.script('build-adreno-metal-plugin.py', logfile=self.logs / 'plugin.log')
 
     def record_check(self, name, result):
