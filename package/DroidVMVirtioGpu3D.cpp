@@ -1037,7 +1037,11 @@ IOReturn surfaceAccess(Client *c, const void *in, size_t inSize, uint64_t &answe
         for (uint32_t i = 0; i < head.count; ++i) {
             Record record;
             memcpy(&record, records + i * sizeof record, sizeof record);
+#if DROIDVM_VIRTIO_GPU_DYNAMIC
             if (!gSurfaceUses || gSurfaceUseCount == MaxSurfaceUses) { droidvm_surface_stats[3] = droidvm_surface_stats[3] + 1; continue; }
+#else
+            if (gSurfaceUseCount == MaxSurfaceUses) { droidvm_surface_stats[3] = droidvm_surface_stats[3] + 1; continue; }
+#endif
             gSurfaceUses[gSurfaceUseCount++] = {record.surface, record.written != 0, c, answer};
         }
     }
