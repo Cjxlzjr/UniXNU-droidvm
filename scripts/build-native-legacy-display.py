@@ -235,7 +235,7 @@ while i<len(args):
     elif not value.startswith('-W'):cmd.append(value)
     i+=1
 cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list',
-      '-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')]
+      '-Wno-deprecated-enum-enum-conversion','-DDROIDVM_LEGACY_17=1','-I',str(ROOT/'.cache/xnu-work/osfmk')]
 run(cmd,cwd=r['directory'])
 virtio_gpu_sources=[ROOT/'kits/droidvm'/name for name in ('DroidVMVirtioGpu.cpp','DroidVMVirtioGpu3D.cpp','DroidVMVirtioGpuDisplay.cpp')]
 virtio_gpu_objects=[]
@@ -275,7 +275,8 @@ run(trace_cmd,cwd=pr['directory'])
 # DroidVM: no board touch/cpufreq/GPU-power probes; their symbols come from the stub object.
 stub_source=ROOT/'kits/droidvm/DroidVMStubs.c'
 stub_obj=OUT/'DroidVMStubs.o'
-run([str(stub_source) if arg==str(process_source) else str(stub_obj) if arg==str(process_obj) else arg for arg in process_cmd],cwd=pr['directory'])
+run([str(stub_source) if arg==str(process_source) else str(stub_obj) if arg==str(process_obj) else arg for arg in process_cmd]+
+    ['-DDROIDVM_LEGACY_17=1'],cwd=pr['directory'])
 # The launchd override writer (XNU_BOARD_LAUNCH_POLICY) calls BSD system calls: compiled in kern_exec's header universe, as
 # sheng's build-boot-progress.py compiles its watchdog policy.
 policy_source=ROOT/'kits/droidvm/DroidVMLaunchPolicy.c'
