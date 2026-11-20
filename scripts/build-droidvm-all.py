@@ -134,14 +134,17 @@ class Build:
         self.unixnu_cmd('fetch', '--update', logfile=self.logs / 'fetch.log')
 
     # setup ---------------------------------------------------------------------------------------------------------------
+    def configure_sources(self):
+        self.unixnu_cmd('defconfig', self.board['kernel']['defconfig'], '-D', DEVICE)
+        self.sync_sources()
+
     def step_setup(self):
         if self.args.ipsw_cache:
             # Members another checkout has extracted already (board.toml pins them; ipsw fetch checks them and keeps them).
             for source in sorted(self.args.ipsw_cache.resolve().iterdir()):
                 if source.is_file() and not source.name.endswith('.partial') and not (self.ipsw / source.name).exists():
                     clone(source, self.ipsw / source.name)
-        self.unixnu_cmd('defconfig', self.board['kernel']['defconfig'], '-D', DEVICE)
-        self.sync_sources()
+        self.configure_sources()
         self.unixnu_cmd('ipsw', 'fetch', logfile=self.logs / 'ipsw-fetch.log')
         # The root disks and the policies over them need the OS and SystemOS volumes too (about 9 GiB).
         self.unixnu_cmd('ipsw', 'fetch', 'OS', 'Cryptex1,SystemOS', logfile=self.logs / 'ipsw-fetch-volumes.log')
@@ -532,7 +535,11 @@ class Build:
             wanted = STEPS[start:end]
         forced = set(self.args.only.split(',')) if self.args.only else (
             set(STEPS[STEPS.index(self.args.from_step):]) if self.args.from_step else set())
-        if self.stamp('setup').is_file() and 'setup' not in wanted:
+        if wanted == ['plugin'] and not self.stamp('setup').is_file():
+            # The Metal plugin uses the pinned source tree and SDK, independent of the IPSW and guest kernel.
+            self.configure_sources()
+            self.unixnu_cmd('tree', logfile=self.logs / 'tree.log')
+        elif self.stamp('setup').is_file() and 'setup' not in wanted:
             self.sync_sources()
             # The tree holds copies of the scripts (UniXNU's with this repository's over them), made when unixnu assembles it:
             # assemble it again, or a step would run the scripts as an earlier run left them.

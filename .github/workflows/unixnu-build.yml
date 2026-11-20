@@ -9,12 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: "Build through this step (images produces the complete iPadOS 17 release)"
+        description: "Build through this step (plugin only checks graphics; images builds the complete iPadOS 17 release)"
         type: choice
         options:
           - setup
           - kernel
           - package
+          - plugin
           - images
         default: images
         required: true
@@ -41,6 +42,9 @@ jobs:
       EXPORT_RECIPIENT: ${{ inputs.export_recipient || 'age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs' }}
       GH_TOKEN: ${{ github.token }}
       UNIXNU_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
+      # Matches cargo +1.98.0 in UniXNU scripts/build-adreno-metal-bridge.py at UNIXNU_REVISION.
+      BRIDGE_RUST_VERSION: "1.98.0"
+      BRIDGE_RUST_TARGET: aarch64-apple-ios
     steps:
       - name: Check out device repository
         uses: actions/checkout@v4
@@ -59,7 +63,12 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           brew install llvm lld cmake ninja unifdef mtools dtc
-          if [[ "$STAGE" == images ]]; then
+          if [[ "$STAGE" == images || "$STAGE" == plugin ]]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup toolchain install "$BRIDGE_RUST_VERSION" --profile minimal --target "$BRIDGE_RUST_TARGET"
+            printf "pub fn probe() -> std::vec::Vec<u8> { std::vec::Vec::new() }\n" | \
+              rustc "+$BRIDGE_RUST_VERSION" --target "$BRIDGE_RUST_TARGET" --crate-name bridge_sdk_probe \
+                --crate-type lib --emit metadata -o "$RUNNER_TEMP/bridge_sdk_probe.rmeta" -
             brew install bison flex glslang gnu-sed pkgconf vulkan-headers shaderc spirv-tools
             command -v glslc
             glslc --version
@@ -113,22 +122,79 @@ jobs:
           set -euo pipefail
           python3 device/scripts/build-droidvm-all.py --list
           case "$STAGE" in
-            setup|kernel|package|images) ;;
+            setup|kernel|package|plugin|images) ;;
             *) echo "::error::Unsupported stage: $STAGE"; exit 1 ;;
           esac
+
+      - name: Identify reusable package outputs
+        if: ${{ github.ref == 'refs/heads/wip/hackintosh' && (env.STAGE == 'package' || env.STAGE == 'images') }}
+        id: package_key
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$CHECKPOINT_IDENTITY" ]]; then
+            echo '::notice::Package checkpoint is disabled without UNIXNU_CHECKPOINT_IDENTITY.'
+            exit 0
+          fi
+          fingerprint=$({
+            printf "%s\n" "$UNIXNU_REVISION" "$RUNNER_OS" "$RUNNER_ARCH"
+            printf "%s\n" "$CHECKPOINT_IDENTITY" | age-keygen -y
+            git -C device ls-tree -r HEAD -- board.toml configs feeds.toml package scripts socs ci/package-checkpoint.py
+            sw_vers -productVersion
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-build-version
+            python3 --version
+            brew list --versions llvm lld cmake ninja unifdef mtools dtc
+          } | shasum -a 256 | cut -d " " -f 1)
+          echo "key=unixnu17-package-$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch encrypted package checkpoint
+        if: ${{ steps.package_key.outputs.key != '' }}
+        id: package_cache
+        uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.package_key.outputs.key }}
+          path: ${{ runner.temp }}/unixnu-package.tar.gz.age
+
+      - name: Restore verified package outputs
+        if: ${{ steps.package_cache.outputs.cache-hit == 'true' }}
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+          CHECKPOINT_KEY: ${{ steps.package_key.outputs.key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p diagnostics
+          python3 device/scripts/build-droidvm-all.py --to setup 2>&1 | tee diagnostics/build-setup.log
+          archive="$RUNNER_TEMP/unixnu-package.tar.gz"
+          trap 'rm -f "$archive"' EXIT
+          if age --decrypt --identity <(printf "%s\n" "$CHECKPOINT_IDENTITY") \
+                  -o "$archive" "$RUNNER_TEMP/unixnu-package.tar.gz.age" && \
+             python3 device/ci/package-checkpoint.py restore UniXNU/out/droidvm "$CHECKPOINT_KEY" --archive "$archive"; then
+            echo 'Restored matching kernel, EFI loaders and their Data seed.'
+          else
+            echo '::warning::Package checkpoint could not be restored; building the missing stages.'
+          fi
 
       - name: Build selected stage
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p diagnostics
+          if [[ "$STAGE" == plugin ]]; then
+            python3 device/scripts/build-droidvm-all.py --only plugin 2>&1 | tee diagnostics/build.log
+            exit 0
+          fi
           first_stage=$STAGE
           if [[ "$first_stage" == images ]]; then first_stage=package; fi
           echo "Starting UniXNU build through: $first_stage"
           python3 device/scripts/build-droidvm-all.py --to "$first_stage" 2>&1 | tee diagnostics/build.log
 
       - name: Check kernel output
-        if: ${{ success() && env.STAGE != 'setup' }}
+        if: ${{ success() && (env.STAGE == 'kernel' || env.STAGE == 'package' || env.STAGE == 'images') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -149,6 +215,27 @@ jobs:
             file "$loader"
             shasum -a 256 "$loader"
           done
+
+      - name: Encrypt successful package checkpoint
+        if: ${{ success() && steps.package_key.outputs.key != '' && steps.package_cache.outputs.cache-hit != 'true' }}
+        id: pack_package
+        continue-on-error: true
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+          CHECKPOINT_KEY: ${{ steps.package_key.outputs.key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          recipient=$(printf "%s\n" "$CHECKPOINT_IDENTITY" | age-keygen -y)
+          python3 device/ci/package-checkpoint.py save UniXNU/out/droidvm "$CHECKPOINT_KEY" | \
+            age --encrypt --recipient "$recipient" -o "$RUNNER_TEMP/unixnu-package.tar.gz.age"
+
+      - name: Save verified package checkpoint before image assembly
+        if: ${{ steps.pack_package.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.package_key.outputs.key }}
+          path: ${{ runner.temp }}/unixnu-package.tar.gz.age
 
       - name: Encrypt kernel artifact (optional)
         if: ${{ success() && (env.STAGE == 'kernel' || env.STAGE == 'images') }}
@@ -249,6 +336,12 @@ jobs:
           for log in UniXNU/out/droidvm/tree/.cache/mesa-tu-*.log; do
             cp "$log" diagnostics/
           done
+          if [[ -d UniXNU/out/droidvm/tree/build/turnip-darwin-host ]]; then
+            mkdir -p diagnostics/turnip-host
+            for log in UniXNU/out/droidvm/tree/build/turnip-darwin-host/*.log; do
+              cp "$log" diagnostics/turnip-host/
+            done
+          fi
           {
             echo "stage=$STAGE"
             echo "runner=$RUNNER_OS"
