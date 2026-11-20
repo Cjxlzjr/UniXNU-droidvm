@@ -1,6 +1,11 @@
 name: UniXNU Staged Build (macOS)
 
 on:
+  push:
+    branches:
+      - wip/hackintosh
+    paths:
+      - 'ci/dispatch-images/**'
   workflow_dispatch:
     inputs:
       stage:
@@ -55,7 +60,11 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           brew install llvm lld cmake ninja unifdef mtools dtc
           if [[ "$STAGE" == images ]]; then
-            brew install bison flex glslang gnu-sed pkgconf vulkan-headers
+            brew install bison flex glslang gnu-sed pkgconf vulkan-headers shaderc spirv-tools
+            command -v glslc
+            glslc --version
+            command -v spirv-val
+            spirv-val --version
             test -s /opt/homebrew/include/vulkan/vulkan.h || { echo '::error::Homebrew Vulkan headers were not linked into /opt/homebrew/include'; exit 1; }
             printf '#include <vulkan/vulkan.h>\nint main(void) { return VK_SUCCESS; }\n' | xcrun clang -x c -std=c11 -I/opt/homebrew/include -fsyntax-only -
             xcrun --sdk iphoneos clang -target arm64-apple-ios17.0 -std=c11 \
