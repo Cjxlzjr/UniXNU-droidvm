@@ -188,8 +188,10 @@ extern "C" volatile uint64_t droidvm_metal_publish[3] = {};
 // The class chains publishMetal adopted: the user client's as Apple's 1 (the sandbox decides every open), not 2; the
 // accelerator's 4, not 8.
 extern "C" volatile uint32_t droidvm_gpu_chain = 0;
+#if !DROIDVM_LEGACY_17
 extern "C" bool OSMetaClassAdoptSuperclass(const char *className, const char *superName);   // droidvm-osmetaclass-adopt-superclass.patch
 extern "C" bool droidvm_gpu_sandbox_decides;                                                // droidvm-gpu-sandbox-first.patch
+#endif
 namespace {
 NativeAdrenoVm gVm;
 NativeAdrenoRing gRing;
@@ -274,8 +276,14 @@ void publishMetal()
     // iokit-open-user-client AGXDeviceUserClient") and to every poster, whatever the name. With the chain adopted the sandbox
     // decides every open, as for Apple's (droidvm-gpu-sandbox-first.patch): a process whose profile refuses Apple's GPU is
     // refused ours. Where it cannot be adopted, the grant (grantedProcesses) still stands in for the sandbox's verdict.
+#if DROIDVM_LEGACY_17
+    // The iPadOS 17 board does not apply the iPadOS 27 XNU metaclass/sandbox patches.
+    // Keep the legacy grant-based fallback instead of importing unimplemented kernel hooks.
+    droidvm_gpu_chain = 2;
+#else
     droidvm_gpu_sandbox_decides = OSMetaClassAdoptSuperclass("AGXDeviceUserClient", "IOGPUDeviceUserClient");
     droidvm_gpu_chain = droidvm_gpu_sandbox_decides ? 1 : 2;
+#endif
     const OSSymbol *name = OSSymbol::withCString("IOAcceleratorES");
     const OSMetaClass *parent = name ? OSMetaClass::getMetaClassWithName(name) : nullptr;
     OSSafeReleaseNULL(name);
@@ -292,7 +300,11 @@ void publishMetal()
     // (an IOAcceleratorES), and WebKit's GPU process opens it under the sandbox extension its UI process issues for IOGPU: an
     // IOAcceleratorES alone was refused it ("deny(1) iokit-open-service AGXAccelerator"). No personality the guest loads
     // matches an IOGPU provider, so the class chain changes no matching.
+#if DROIDVM_LEGACY_17
+    droidvm_gpu_chain |= 8;
+#else
     droidvm_gpu_chain = droidvm_gpu_chain | (OSMetaClassAdoptSuperclass("AGXAccelerator", "IOGPU") ? 4 : 8);
+#endif
 #endif
     if (native_adreno_accelerator_instance_size() != 136) {droidvm_metal_publish[2] = uint32_t(kIOReturnInvalid); return;}
     droidvm_metal_publish[1] = 3;
