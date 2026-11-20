@@ -1,0 +1,10 @@
+diff --git a/pexpert/pexpert/arm64/BCM2837.h b/pexpert/pexpert/arm64/BCM2837.h
+--- a/pexpert/pexpert/arm64/BCM2837.h
++++ b/pexpert/pexpert/arm64/BCM2837.h
+@@ -28,3 +28,5 @@
+ #define PI3_UART
+-
++/* DarwinBoot describes crosvm's PL011-compatible SBSA UART as uart0. */
++#define VMAPPLE_UART
++
+ #define PI3_BREAK                               asm volatile("brk #0");
