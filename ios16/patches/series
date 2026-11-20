@@ -25,3 +25,4 @@ component:xnu8796-patches/8796-iorpc-kernel-content.patch
 component:xnu8796-patches/8796-kperf-kpc-link-guards.patch
 component:xnu8796-patches/8796-compile-records.patch
 component:xnu8796-patches/8796-sparse-prelink-index.patch
+component:xnu8796-patches/8796-vfs-getvfs-with-vfsops.patch

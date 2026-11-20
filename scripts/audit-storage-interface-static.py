@@ -35,6 +35,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument('--candidate', type=Path, default=None,
                     help='prelinked kernel whose .json prelink report sits next to it (default: the board\'s reference '
                          'candidate build/reference-candidate/kernel.macho, else out/<board>/kernel/kernel.macho)')
+parser.add_argument('--ios16', action='store_true', help='Audit against the D22AP 20H392 donor and iOS 16 target')
 args = parser.parse_args()
 # The candidate must be a kernel WITHOUT the storage drivers: once they are linked, the original-class symbols
 # they bind are native exports too and the binding count no longer identifies the original dispatch.
@@ -96,7 +97,8 @@ dwarf = subprocess.check_output(['xcrun', 'dwarfdump', '--name=IOBlockStorageDev
 class_size = re.search(r'DW_AT_name\s+\("IOBlockStorageDevice"\)[\s\S]{0,200}?DW_AT_byte_size\s+\((0x[0-9a-f]+)\)', dwarf)
 require(class_size and int(class_size[1], 16) == 0x90, 'Actual compiled public class size changed')
 version_command = next(at for command, at, size in om['commands'] if command == 0x32)
-require(struct.unpack_from('<II', obj, version_command + 8) == (2, 0x110000), 'Expected iOS 17 reference deployment')
+require(struct.unpack_from('<II', obj, version_command + 8) == (2, 0x100000 if args.ios16 else 0x110000),
+        'Reference object must use the selected iOS executable ABI')
 sycmd = next(at for command, at, size in om['commands'] if command == 2)
 symoff, count, stroff, _ = struct.unpack_from('<4I', obj, sycmd + 8)
 symbols = []
@@ -123,8 +125,10 @@ require(len(methods) == 190 and methods.count('___cxa_pure_virtual') == 14, 'Pub
 kernel_path = args.candidate
 kernel = kernel_path.read_bytes()
 plan = json.loads(kernel_path.with_suffix('.json').read_text())
+original_sha256 = ('2ec297bac95bcba01046fd0148e97e7e5885c05a6c18827f39f534ba375c1221' if args.ios16
+                   else 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7')
 require(hashlib.sha256(kernel).hexdigest() == plan['candidate_sha256'] and
-        plan['original_sha256'] == 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7', 'Unexpected original candidate provenance')
+        plan['original_sha256'] == original_sha256, 'Unexpected original candidate provenance')
 native = np.macho(kernel)
 exports = np.exports(kernel, native)
 by_name = {name: va for va, names in exports.items() for name in names}
@@ -215,7 +219,7 @@ result = dict(public_source_revision=revision, source_sha256=hashlib.sha256((sou
               vtable=hex(table), original_metaclass=hex(meta), source_ioservice_metaclass=hex(service_meta),
               original_protected_constructor=hex(constructors[0][0]), original_base_destructor=hex(destructor),
               abstract_complete_destructors_trap=True,
-              live_metadata_checked=False, live_native_4k=True,
+              live_metadata_checked=False, live_native_4k=not args.ios16,
               compiled_public_class_size=int(class_size[1], 16),
               methods=[dict(slot=i, reference_name=name, candidate_target=hex(pointers[i]), kernel_names=exports.get(pointers[i], []))
                        for i, name in enumerate(methods)], disk_read_tested=False, transport_implemented=False, hardware_tested=False)

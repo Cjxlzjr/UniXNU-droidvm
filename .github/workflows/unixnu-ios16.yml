@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: 'Compile and prelink the iPhone X kernel, or build the native executable only'
+        description: 'Select native, prelinked kernel or APFS and storage ABI checks'
         type: choice
-        options: [kernel, native]
+        options: [kernel, native, storage]
         default: kernel
       export_recipient:
         description: 'Public age recipient for the encrypted kernel'
@@ -61,7 +61,36 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p diagnostics
-          bash device/ios16/build-kernel.sh "$STAGE" UniXNU 2>&1 | tee diagnostics/build.log
+          build_stage=$STAGE
+          if [[ "$STAGE" == storage ]]; then build_stage=kernel; fi
+          bash device/ios16/build-kernel.sh "$build_stage" UniXNU 2>&1 | tee diagnostics/build.log
+
+      - name: Qualify the APFS and read-only VirtIO ABI
+        if: env.STAGE == 'storage'
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(cd "$KERNEL_DIR/.." && pwd)
+          tree="$work/tree"
+          python3 device/ios16/verify-kernel.py "$KERNEL_DIR"
+          python3 - "$KERNEL_DIR/kernel.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          record = json.loads(Path(sys.argv[1]).read_text())
+          if not record['original_executable_sha256'].get('com.apple.filesystems.apfs'):
+              sys.exit('Prelink did not include the iPhone X APFS implementation')
+          PY
+          xcrun nm "$KERNEL_DIR/kernel.macho" | awk '/ T _vfs_getvfs_with_vfsops$/ { found=1 } END { exit !found }'
+          install -m 0644 device/scripts/audit-storage-interface-static.py "$tree/scripts/audit-storage-interface-static.py"
+          python3 "$tree/scripts/audit-storage-interface-static.py" --ios16 --candidate "$work/kernel/kernel.macho" \
+            2>&1 | tee diagnostics/storage.log
+          cp "$tree/build/storage-abi/interface-audit.json" diagnostics/
+          ln -s "$PWD/UniXNU/drivers/VirtioMmioBlock" "$tree/drivers/VirtioMmioBlock"
+          ln -s "$PWD/UniXNU/kits/VerifiedRoot" "$tree/kits/VerifiedRoot"
+          UNIXNU_IOS_VERSION=16.0 python3 "$tree/scripts/build-arm-driver.py" \
+            VirtioMmioBlock --verified-root --verified-root-bundle 2>&1 | tee diagnostics/virtio.log
 
       - name: Verify and encrypt kernel
         shell: bash
@@ -82,7 +111,7 @@ jobs:
           metadata = json.loads(kernel.with_suffix('.json').read_text())
           if metadata.get('candidate_sha256') != digest:
               sys.exit('kernel.macho SHA-256 does not match the build record')
-          if stage == 'kernel' and not metadata.get('original_executable_sha256'):
+          if stage != 'native' and not metadata.get('original_executable_sha256'):
               sys.exit('Prelink did not record any donor executables')
           if stage == 'native' and not metadata.get('prelink_skipped'):
               sys.exit('Missing native-only build record')
@@ -109,5 +138,7 @@ jobs:
           path: |
             diagnostics/
             UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/logs/*.log
+            UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/tree/build/storage-abi/compile.log
+            UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/tree/build/virtio-mmio-block-verified-bundle/compile.log
           if-no-files-found: ignore
           retention-days: 7

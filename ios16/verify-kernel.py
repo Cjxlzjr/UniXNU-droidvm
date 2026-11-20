@@ -19,4 +19,6 @@ if record.get('candidate_sha256') != digest or record.get('candidate_bytes') != 
     sys.exit('Kernel does not match its prelink report')
 if not record.get('original_executable_sha256') or record.get('prelink_skipped'):
     sys.exit('The boot probe requires the prelinked kernel')
+if record.get('original_sha256') != '2ec297bac95bcba01046fd0148e97e7e5885c05a6c18827f39f534ba375c1221':
+    sys.exit('Kernel prelink report does not identify the pinned 20H392 iPhone X donor')
 print(f'{digest}  {kernel} ({kernel.stat().st_size:,} bytes)')
