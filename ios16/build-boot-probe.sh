@@ -16,11 +16,8 @@ if [[ "$stage" == loader ]]; then
   # EDK II and DarwinBoot are OS-independent. Isolate the existing package recipe's output.
   UNIXNU_OUT="$out/loader-build" python3 "$device/scripts/build-droidvm-all.py" --unixnu "$core" --only package
   efi="$out/loader-build/droidvm/package/Build/Out/AARCH64-DEBUG"
-  : >"$release/efi-format.txt"
+  python3 "$device/ios16/verify-efi.py" "$efi" | tee "$release/efi-format.txt"
   for binary in UniXNU.efi DarwinBoot.efi; do
-    description=$(file -b "$efi/$binary")
-    printf '%s: %s\n' "$binary" "$description" | tee -a "$release/efi-format.txt"
-    printf '%s\n' "$description" | grep -Eiq '^PE32\+.*(arm64|aarch64)'
     install -m 0644 "$efi/$binary" "$release/$binary"
   done
   (cd "$release" && shasum -a 256 UniXNU.efi DarwinBoot.efi >efi-sha256.txt)
