@@ -19,7 +19,8 @@ case "${4:-}" in
   --legacy-smp)
     SOURCE=$(mktemp -d "$BUILD_DIR/darwinboot-source.XXXXXX")
     trap 'rm -rf "$SOURCE"' EXIT
-    cp -R "$DARWINBOOT/DarwinBootPkg" "$SOURCE/"
+    # DarwinBoot.dsc also builds the validation INF in the sibling Test directory.
+    (cd "$DARWINBOOT" && tar --exclude=.git -cf - .) | tar -xf - -C "$SOURCE"
     patch -d "$SOURCE" -p1 -i "$TREE/scripts/data/darwinboot-legacy-smp.patch"
     DARWINBOOT=$SOURCE
     ;;
