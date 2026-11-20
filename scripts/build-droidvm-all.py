@@ -154,9 +154,8 @@ class Build:
     def os_attachment(self):
         """The whole-disk device of the OS image's read-only attachment, attaching it at os-mount when it is not."""
         source, image, mount = self.ipsw / OS_DMG, self.scratch / OS_DMG, self.scratch / 'os-mount'
-        if not image.is_file() or image.stat().st_size != source.stat().st_size:
-            self.scratch.mkdir(parents=True, exist_ok=True)
-            run(['cp', source, image])
+        # The runner's checkout and /tmp share an APFS volume. Clone there to avoid allocating the OS DMG twice.
+        clone(source, image)
         for name, target in ((OS_DMG, image), ('os-mount', mount)):
             link = self.volumes / name
             if not link.is_symlink() or link.resolve() != target.resolve():
