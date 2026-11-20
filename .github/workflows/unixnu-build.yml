@@ -1,0 +1,152 @@
+name: UniXNU Staged Build (macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Build through this step (setup downloads IPSW inputs; kernel compiles XNU and all prerequisites)"
+        type: choice
+        options:
+          - setup
+          - kernel
+        default: kernel
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unixnu-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: "Build through ${{ inputs.stage }}"
+    runs-on: xcode-27
+    timeout-minutes: 330
+    env:
+      STAGE: ${{ inputs.stage }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare macOS toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          brew install llvm lld cmake ninja unifdef mtools dtc
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          df -h / /private/tmp
+
+      - name: Clone UniXNU and submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
+          git -C UniXNU submodule update --init --recursive --filter=blob:none
+          echo "UniXNU commit: $(git -C UniXNU rev-parse HEAD)"
+          echo "Device commit: $(git -C device rev-parse HEAD)"
+
+      - name: List staged build steps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 device/scripts/build-droidvm-all.py --list
+          case "$STAGE" in
+            setup|kernel) ;;
+            *) echo "::error::Unsupported stage: $STAGE"; exit 1 ;;
+          esac
+
+      - name: Build selected stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          echo "Starting UniXNU build through: $STAGE"
+          python3 device/scripts/build-droidvm-all.py --to "$STAGE" 2>&1 | tee diagnostics/build.log
+
+      - name: Check kernel output
+        if: ${{ success() && inputs.stage == 'kernel' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s UniXNU/out/droidvm/kernel/kernel.macho
+          ls -lh UniXNU/out/droidvm/kernel/kernel.macho
+          file UniXNU/out/droidvm/kernel/kernel.macho
+          shasum -a 256 UniXNU/out/droidvm/kernel/kernel.macho
+
+      - name: Save diagnostics and disk report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "stage=$STAGE"
+            echo "runner=$RUNNER_OS"
+            echo "date=$(date -u +%FT%TZ)"
+            df -h / /private/tmp
+            du -sh UniXNU/out/droidvm 2>/dev/null || true
+            du -sh UniXNU/out/ipsw 2>/dev/null || true
+          } > diagnostics/storage.txt
+          if [ -d UniXNU/out/droidvm/build-all ]; then
+            find UniXNU/out/droidvm/build-all -maxdepth 2 -type f -name '*.done' -print | sort > diagnostics/completed-steps.txt
+          fi
+          {
+            echo "## UniXNU staged build"
+            echo "- Selected step: \`$STAGE\`"
+            echo "- Source branch: \`wip/hackintosh\`"
+            echo ""
+            echo "### Disk after build"
+            echo "```"
+            cat diagnostics/storage.txt
+            echo "```"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unixnu-build-logs-${{ github.run_number }}
+          path: |
+            diagnostics/
+            UniXNU/out/droidvm/build-all/logs/
+            UniXNU/out/droidvm/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Encrypt kernel artifact (optional)
+        if: ${{ success() && inputs.stage == 'kernel' }}
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$ARTIFACT_KEY" ]; then
+            echo "::notice::Set repository secret ARTIFACT_KEY to export an encrypted kernel; no binary uploaded."
+            exit 0
+          fi
+          tar -czf - -C UniXNU/out/droidvm kernel | \
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ARTIFACT_KEY \
+              -out "$RUNNER_TEMP/unixnu-kernel.tar.gz.enc"
+          echo "Encrypted kernel ready."
+
+      - name: Upload encrypted kernel
+        if: ${{ success() && inputs.stage == 'kernel' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unixnu-kernel-encrypted-${{ github.run_number }}
+          path: ${{ runner.temp }}/unixnu-kernel.tar.gz.enc
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 7
