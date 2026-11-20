@@ -1,0 +1,65 @@
+name: DroidVM Android crosvm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crosvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      META_REVISION: baa8c709303dde752a01f47e426e53d5d9ce02dd
+      CROSVM_REVISION: da647254c2a9c6458ac2f5e0d15fb4c33c6333a8
+      JOBS: 4
+    steps:
+      - name: Prepare the Linux build host
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Leave space for the Android source tree and Soong outputs on this disposable runner.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          sudo apt-get update
+          sudo apt-get install -y git repo gawk rsync binutils-aarch64-linux-gnu libxml2-utils
+          rustup target add aarch64-unknown-none-softfloat
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          df -h .
+
+      - name: Fetch the DroidVM Soong tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/droidvm-meta-repo.git droidvm
+          cd droidvm
+          git checkout -B wip/hackintosh "$META_REVISION"
+          ./1_build_crosvm_prepare.sh
+          git -C crosvm checkout --detach "$CROSVM_REVISION"
+          df -h .
+
+      - name: Build and verify Android arm64 crosvm
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd droidvm
+          ./2_build_crosvm.sh
+          file crosvm_out/crosvm
+          readelf -d crosvm_out/crosvm | tee crosvm_out/dynamic.txt
+          # Check the capabilities required by the iPadOS 17 DroidVM configuration.
+          for device in block input net gpu snd media; do
+            grep -aFq "virtio-mmio-$device" crosvm_out/crosvm
+          done
+          printf 'crosvm=%s\nmeta=%s\n' "$CROSVM_REVISION" "$META_REVISION" > crosvm_out/source-commits.txt
+          (cd crosvm_build && repo manifest -r) > crosvm_out/aosp-manifest.xml
+          cd crosvm_out
+          sha256sum crosvm | tee SHA256SUMS
+
+      - name: Upload Android arm64 crosvm
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosvm-droidvm-arm64-${{ github.run_number }}
+          path: droidvm/crosvm_out/
+          if-no-files-found: error
+          retention-days: 14
