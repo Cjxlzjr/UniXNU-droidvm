@@ -13,7 +13,7 @@ jobs:
     env:
       META_REVISION: baa8c709303dde752a01f47e426e53d5d9ce02dd
       CROSVM_REVISION: da647254c2a9c6458ac2f5e0d15fb4c33c6333a8
-      JOBS: 4
+      JOBS: 2
     steps:
       - name: Prepare the Linux build host
         shell: bash
@@ -23,6 +23,11 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
           sudo apt-get update
           sudo apt-get install -y git repo gawk rsync binutils-aarch64-linux-gnu libxml2-utils
+          swap_file="$RUNNER_TEMP/droidvm-soong.swap"
+          sudo fallocate -l 16G "$swap_file"
+          sudo chmod 600 "$swap_file"
+          sudo mkswap "$swap_file"
+          sudo swapon "$swap_file"
           rustup target add aarch64-unknown-none-softfloat
           git config --global user.name 'GitHub Actions'
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -44,6 +49,16 @@ jobs:
         run: |
           set -euo pipefail
           cd droidvm
+          free -h
+          (
+            while sleep 30; do
+              free -h
+              df -h .
+              ps -eo pid,comm,rss --sort=-rss | sed -n '1,6p'
+            done
+          ) &
+          reporter=$!
+          trap 'kill "$reporter" 2>/dev/null || true' EXIT
           ./2_build_crosvm.sh
           file crosvm_out/crosvm
           readelf -d crosvm_out/crosvm | tee crosvm_out/dynamic.txt
