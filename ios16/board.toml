@@ -25,6 +25,7 @@ archives = [
 tool = "kits/XnuPrelink/emit_prelink.py"
 # Darwin 22's makedefs do not emit a separate .noctf executable.
 kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped"
+kernelcache_sha256 = "2ec297bac95bcba01046fd0148e97e7e5885c05a6c18827f39f534ba375c1221"
 slide = "-0x1000000"
 # Bring-up roots from the 20H392 nuwa prelink. APFS and the mobile
 # graphics roots require separate Darwin 22 linkage work.
@@ -58,3 +59,18 @@ roots = [
   "com.apple.security.AppleImage4",
   "com.apple.security.sandbox",
 ]
+
+[payload]
+volume = "IOS16PROBE"
+size_mib = 128
+loader = "driver"
+title = "DroidVM: iPhone X iOS 16 kernel probe"
+dram_size = "0x13fa00000"
+kernel_args = ["debug=0x10a", "serial=3", "-v", "keepsyms=1", "armcpu-diagnostics=1"]
+
+[payload.adt]
+tool = "scripts/make-droidvm-adt.py"
+dram_base = "0x80600000"
+owned_memory_size = "0x20000000"
+tool_args = ["--dynamic", "--fdt", "build/crosvm-gunyah.dtb", "--identity-tree", "build/iphone-x-identity.im4p",
+             "--reclaim-memory", "--boot-video-mib", "8", "--display-gamut", "sRGB"]

@@ -1,0 +1,228 @@
+name: UniXNU DroidVM iOS 16 boot stages
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Select an independent build stage'
+        type: choice
+        options: [all, loader, probe, volumes]
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  UNIXNU_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
+  EXPORT_RECIPIENT: age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs
+
+jobs:
+  loader:
+    if: inputs.stage != 'volumes'
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Droid-VM/UniXNU
+          ref: ${{ env.UNIXNU_REVISION }}
+          path: UniXNU
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install EFI compiler
+        run: brew install llvm lld
+      - name: Build and verify UEFI loaders with symmetric vCPU topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          bash device/ios16/build-boot-probe.sh loader UniXNU efi 2>&1 | tee diagnostics/loader.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-efi
+          path: efi/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-efi-logs
+          path: |
+            diagnostics/
+            UniXNU/out-ios16/loader-build/droidvm/build-all/logs/*.log
+            UniXNU/out-ios16/loader-build/droidvm/logs/*.log
+          if-no-files-found: ignore
+
+  probe:
+    if: inputs.stage == 'all' || inputs.stage == 'probe'
+    needs: loader
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      KERNEL_DIR: UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/kernel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Droid-VM/UniXNU
+          ref: ${{ env.UNIXNU_REVISION }}
+          path: UniXNU
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios16-efi
+          path: boot-probe
+      - name: Install packaging tools
+        run: brew install age mtools
+      - name: Identify a reusable kernel checkpoint
+        id: checkpoint
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CHECKPOINT_IDENTITY" || exit 0
+          fingerprint=$({
+            printf '%s\n' "$UNIXNU_REVISION" "$RUNNER_ARCH"
+            printf '%s\n' "$CHECKPOINT_IDENTITY" | age-keygen -y
+            git -C device ls-tree -r HEAD -- ios16/board.toml ios16/profile.toml ios16/feeds.toml ios16/configs ios16/patches ios16/build-kernel.sh
+            sw_vers -productVersion
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-build-version
+            python3 --version
+          } | shasum -a 256 | cut -d ' ' -f 1)
+          echo "key=unixnu-ios16-prelinked-$fingerprint" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: cached_kernel
+        if: steps.checkpoint.outputs.key != ''
+        with:
+          key: ${{ steps.checkpoint.outputs.key }}
+          path: ${{ runner.temp }}/ios16-kernel-checkpoint.tar.gz.age
+      - name: Restore or build the iOS 16 kernel
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+          CACHED_KERNEL: ${{ steps.cached_kernel.outputs.cache-hit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p diagnostics "$KERNEL_DIR"
+          bash device/ios16/build-kernel.sh setup UniXNU
+          if [[ "$CACHED_KERNEL" == 'true' ]]; then
+            restored=$(mktemp -d "$RUNNER_TEMP/ios16-kernel.XXXXXX")
+            trap 'rm -rf "$restored"' EXIT
+            if age --decrypt --identity <(printf '%s\n' "$CHECKPOINT_IDENTITY") \
+                -o "$restored/kernel.tar.gz" "$RUNNER_TEMP/ios16-kernel-checkpoint.tar.gz.age" && \
+                [[ $(tar -tzf "$restored/kernel.tar.gz") == $'kernel.macho\nkernel.json' ]] && \
+                tar -xzf "$restored/kernel.tar.gz" -C "$restored" && \
+                python3 device/ios16/verify-kernel.py "$restored"; then
+              mv "$restored/kernel.macho" "$restored/kernel.json" "$KERNEL_DIR/"
+              echo 'Restored a verified prelinked iOS 16 kernel.'
+              exit 0
+            fi
+            echo '::warning::Cached kernel failed validation. Rebuilding it from source.'
+          fi
+          brew install llvm lld cmake ninja unifdef
+          bash device/ios16/build-kernel.sh kernel UniXNU 2>&1 | tee diagnostics/kernel.log
+          python3 device/ios16/verify-kernel.py "$KERNEL_DIR"
+      - name: Encrypt kernel checkpoint before boot packaging
+        if: steps.checkpoint.outputs.key != '' && steps.cached_kernel.outputs.cache-hit != 'true'
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          recipient=$(printf '%s\n' "$CHECKPOINT_IDENTITY" | age-keygen -y)
+          tar -czf - -C "$KERNEL_DIR" kernel.macho kernel.json | \
+            age --encrypt --recipient "$recipient" -o "$RUNNER_TEMP/ios16-kernel-checkpoint.tar.gz.age"
+      - uses: actions/cache/save@v4
+        if: steps.checkpoint.outputs.key != '' && steps.cached_kernel.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.checkpoint.outputs.key }}
+          path: ${{ runner.temp }}/ios16-kernel-checkpoint.tar.gz.age
+      - name: Build, inspect and encrypt the kernel handoff disk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash device/ios16/build-boot-probe.sh probe UniXNU boot-probe 2>&1 | tee diagnostics/boot-probe.log
+          cp boot-probe/boot-probe.json diagnostics/
+          tar -czf - -C boot-probe ios16-boot-probe.img boot-probe.json | \
+            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-boot-probe.tar.gz.age"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-boot-probe-encrypted
+          path: ${{ runner.temp }}/ios16-boot-probe.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-boot-probe-logs
+          path: |
+            diagnostics/
+            UniXNU/out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/logs/*.log
+          if-no-files-found: ignore
+
+  volumes:
+    if: inputs.stage == 'all' || inputs.stage == 'volumes'
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Droid-VM/UniXNU
+          ref: ${{ env.UNIXNU_REVISION }}
+          path: UniXNU
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install image export tool
+        run: brew install age
+      - name: Verify and encrypt the iPhone X system disks
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p diagnostics
+          scratch=$(mktemp -d /private/tmp/ios16-volumes.XXXXXX)
+          trap 'rm -rf "$scratch"' EXIT
+          df -h "$scratch"
+          available=$(df -Pk "$scratch" | awk 'NR == 2 {print $4}')
+          [[ "$available" -gt $((18 * 1024 * 1024)) ]] || { echo '::error::iOS 16 image preparation needs 18 GiB of free space'; exit 1; }
+          python3 device/ios16/prepare-volumes.py UniXNU "$scratch" 2>&1 | tee diagnostics/volumes.log
+          cp "$scratch/volumes.json" diagnostics/
+          tar -czf - -C "$scratch" os.img systemos.img volumes.json | \
+            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-volumes.tar.gz.age"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-volumes-encrypted
+          path: ${{ runner.temp }}/ios16-volumes.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-volumes-logs
+          path: diagnostics/
+          if-no-files-found: ignore

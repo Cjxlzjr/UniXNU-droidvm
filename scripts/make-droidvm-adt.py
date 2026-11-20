@@ -398,8 +398,7 @@ def main():
     parser.add_argument('--ipad-identity', action='store_true',
                         help='/product and /buttons describe an iPad-class device (values of the unchanged iPad7,1 tree)')
     parser.add_argument('--identity-tree', type=Path, default=None,
-                        help='with --ipad-identity: the identity (root model, target-type, board, /product) of this device '
-                             'tree of the target OS (its IPSW DeviceTree, the IM4P or decoded) instead of the iPad7,1 values')
+                        help='Use the target IPSW DeviceTree (IM4P or decoded) for the root model, target-type, board and /product')
     parser.add_argument('--packed-data-ramdisk', action='store_true')
     parser.add_argument('--data-ramdisk', action='store_true',
                         help='/chosen/memory-map RAMDisk placeholder; the loader fills in the real range')
@@ -450,8 +449,6 @@ def main():
     for value in args.text_fixup:
         if not re.fullmatch(r'[A-Za-z0-9_.\-]{1,63},[0-9a-fA-F]{1,16},(?:[0-9a-fA-F]{2}){1,16},(?:[0-9a-fA-F]{2}){1,16}', value) or len(value) >= 160:
             parser.error(f'malformed --text-fixup {value}')
-    if args.identity_tree and not args.ipad_identity:
-        parser.error('--identity-tree takes --ipad-identity')
     if (args.unique_chip_id is None) != (args.chip_id is None):
         parser.error('--unique-chip-id and --chip-id must be supplied together')
     if args.owned_memory_size is not None and (
@@ -570,16 +567,17 @@ def main():
                                    ('cluster-type', vm['cluster_types'][reg].encode() + b'\0')])
             for index, reg in enumerate(cpu_regs[:1] if args.dynamic else cpu_regs)]
     identity = identity_of(args.identity_tree) if args.identity_tree else None
+    has_identity = identity is not None or args.ipad_identity
     adt_table = json.loads(args.adt_table.read_text()) if args.adt_table else {}
     chosen_children = chosen_from_table([], adt_table)[1]
     tree = node('device-tree', [
-        ('model', (identity['model'] if identity else b'iPad7,1\0') if args.ipad_identity else b'droidvm-first-boot\0'),
-        *([('target-type', identity['target-type'] if identity else b'J120\0')] if args.ipad_identity else []),
+        ('model', (identity['model'] if identity else b'iPad7,1\0') if has_identity else b'droidvm-first-boot\0'),
+        *([('target-type', identity['target-type'] if identity else b'J120\0')] if has_identity else []),
         # The iPad's board name first: libMobileGestalt reads the first entry as the hardware model (HWModelStr), and CoreMotion and
         # locationd know a device's motion sensors only by it (CLPlatformInfo::queryEmbeddedSystemHardware hashes it against its
         # table; "droidvm,crosvm-gunyah" had none, so CMMotionManager reported no accelerometer or gyroscope). The audio server and
         # MediaExperience key their per-board tables on it too (UniXNU 688fa88). The board's own string stays matchable after it.
-        ('compatible', ((identity['board'] if identity else b'J120AP\0') if args.ipad_identity else b'') + b'droidvm,crosvm-gunyah\0'),
+        ('compatible', ((identity['board'] if identity else b'J120AP\0') if has_identity else b'') + b'droidvm,crosvm-gunyah\0'),
         ('#address-cells', struct.pack('<I', 2)),
         ('#size-cells', struct.pack('<I', 2)),
     ], [
@@ -644,7 +642,7 @@ def main():
                             ('button-names', b'hold\0voldown\0volup\0'),
                             ('home-button-type', struct.pack('<I', 2))])] if args.ipad_identity else []),
         node('product', [*(identity['product'] + [('artwork-display-gamut', args.display_gamut.encode() + b'\0')]
-                           if identity and args.ipad_identity else
+                           if identity else
                            [('product-name', b'iPad Pro (12.9-inch) (2nd generation)\0' if args.ipad_identity else b'DroidVM guest\0')]),
                          ('model', b'droidvm,crosvm-gunyah\0'),
                          *([('product-description', b'iPad Pro (12.9-inch) (2nd generation)\0'),

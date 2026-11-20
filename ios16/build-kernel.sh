@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# != 2 || ( "$1" != native && "$1" != kernel ) ]]; then
-  echo "Usage: bash ios16/build-kernel.sh {native|kernel} /path/to/UniXNU" >&2
+if [[ $# != 2 || ( "$1" != setup && "$1" != native && "$1" != kernel ) ]]; then
+  echo "Usage: bash ios16/build-kernel.sh {setup|native|kernel} /path/to/UniXNU" >&2
   exit 2
 fi
 
@@ -26,6 +26,9 @@ fi
 cd "$core"
 out="$core/out-ios16"
 ./unixnu defconfig droidvm_ios16_defconfig -D "$device" --out "$out"
+if [[ "$stage" == setup ]]; then
+  exit 0
+fi
 if [[ "$stage" == native ]]; then
   ./unixnu build kernel -D "$device" --out "$out" --skip-prelink
 else

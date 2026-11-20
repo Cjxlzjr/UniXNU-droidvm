@@ -1,11 +1,6 @@
 name: UniXNU DroidVM iOS 16
 
 on:
-  push:
-    branches: [wip/hackintosh]
-    paths:
-      - 'ios16/**'
-      - '.github/workflows/unixnu-ios16.yml'
   workflow_dispatch:
     inputs:
       stage:

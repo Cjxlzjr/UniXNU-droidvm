@@ -17,6 +17,14 @@ On a macOS machine with the CI toolchain and the pinned UniXNU checkout, run
 `out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/kernel/` in that
 checkout. Rerunning locally reuses the per-target source and object directories.
 
-The kernel milestone covers compile and prelink. A bootable DroidVM image needs
-the iOS 16 storage and root policy integration, EFI and ADT packaging, and
-device validation.
+Run **UniXNU DroidVM iOS 16 boot stages** for the next build steps:
+
+| Stage | Verified output |
+| --- | --- |
+| `loader` | ARM64 `UniXNU.efi` and legacy-SMP `DarwinBoot.efi`, with hashes. |
+| `probe` | An encrypted FAT boot disk with those loaders, the prelinked kernel and the original iPhone X identity. The report checks files extracted from the finished disk. |
+| `volumes` | Separately encrypted OS and SystemOS disk images with Apple input pins, decoded hashes and APFS volume UUIDs. |
+
+The probe builds or restores its checked prelinked kernel before packaging.
+It exercises UEFI to XNU handoff. Mounting the root volumes and reaching the
+iPhone UI require Darwin 22 storage, root policy and display integration.
