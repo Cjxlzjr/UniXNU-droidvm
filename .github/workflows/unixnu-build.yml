@@ -1,11 +1,6 @@
 name: UniXNU Staged Build (macOS)
 
 on:
-  push:
-    branches:
-      - wip/hackintosh
-    paths:
-      - .github/workflows/unixnu-build.yml
   workflow_dispatch:
     inputs:
       stage:
@@ -16,7 +11,7 @@ on:
           - kernel
           - package
           - images
-        default: kernel
+        default: images
         required: true
       export_recipient:
         description: "Public age recipient (age1…); required for images, optional for kernel"
@@ -60,7 +55,9 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           brew install llvm lld cmake ninja unifdef mtools dtc
           if [[ "$STAGE" == images ]]; then
-            brew install bison flex glslang gnu-sed pkgconf
+            brew install bison flex glslang gnu-sed pkgconf vulkan-headers
+            test -s /opt/homebrew/include/vulkan/vulkan.h || { echo '::error::Homebrew Vulkan headers were not linked into /opt/homebrew/include'; exit 1; }
+            printf '#include <vulkan/vulkan.h>\nint main(void) { return VK_SUCCESS; }\n' | xcrun clang -x c -std=c11 -I/opt/homebrew/include -fsyntax-only -
             xcrun --sdk iphoneos clang -target arm64-apple-ios17.0 -std=c11 \
               -D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE -Werror \
               -dynamiclib -Wl,-undefined,dynamic_lookup -Wl,-fixup_chains \
