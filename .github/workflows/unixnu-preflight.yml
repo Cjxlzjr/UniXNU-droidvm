@@ -1,0 +1,87 @@
+name: UniXNU macOS Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Verify macOS 27 / Xcode 27 build environment
+    runs-on: xcode-27
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out UniXNU-droidvm
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check host and Xcode toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "===== macOS ====="
+          sw_vers
+          uname -m
+          echo "===== Xcode ====="
+          xcode-select -p
+          xcodebuild -version
+          echo "===== iPhoneOS SDK ====="
+          xcrun --sdk iphoneos --show-sdk-version
+          echo "===== Compiler ====="
+          xcrun clang --version
+          echo "===== Python ====="
+          python3 --version
+
+      - name: Check build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in git python3 xcodebuild xcrun clang hdiutil diskutil; do
+            command -v "$tool" || exit 1
+          done
+          for tool in rustc cargo cmake ninja; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              command -v "$tool"
+            else
+              echo "Optional tool unavailable: $tool"
+            fi
+          done
+
+      - name: Check UniXNU project inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "===== Build phases (no build started) ====="
+          python3 scripts/build-droidvm-all.py --list
+          echo "===== Upstream UniXNU branch ====="
+          git ls-remote --exit-code --heads https://github.com/Droid-VM/UniXNU.git wip/hackintosh
+
+      - name: Report available disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "===== Root volume ====="
+          df -h /
+          echo "===== Temporary build volume ====="
+          df -h /private/tmp
+          {
+            echo "## UniXNU macOS build preflight"
+            echo ""
+            echo "- Runner: \`xcode-27\`"
+            echo "- Source branch: \`${{ github.ref_name }}\`"
+            echo "- Xcode: $(xcodebuild -version | head -1)"
+            echo "- iPhoneOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+            echo ""
+            echo "### Disk capacity"
+            echo "\`\`\`"
+            df -h / /private/tmp
+            echo "\`\`\`"
+            echo ""
+            echo "This is a preflight only: it does not download IPSW files, build XNU, or create an iPadOS image."
+          } >> "$GITHUB_STEP_SUMMARY"
