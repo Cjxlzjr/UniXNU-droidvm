@@ -6,7 +6,7 @@ on:
       stage:
         description: 'Select an independent build stage'
         type: choice
-        options: [all, loader, probe, volumes]
+        options: [all, loader, probe, volumes, policies]
         default: all
       efi_run_id:
         description: 'Optional successful run ID to reuse the verified iOS 16 EFI artifact'
@@ -21,7 +21,7 @@ env:
 
 jobs:
   loader:
-    if: inputs.stage != 'volumes' && (inputs.stage == 'loader' || inputs.efi_run_id == '')
+    if: (inputs.stage == 'loader' || inputs.stage == 'all' || inputs.stage == 'probe') && (inputs.stage == 'loader' || inputs.efi_run_id == '')
     runs-on: xcode-27
     timeout-minutes: 45
     steps:
@@ -193,7 +193,7 @@ jobs:
           if-no-files-found: ignore
 
   volumes:
-    if: inputs.stage == 'all' || inputs.stage == 'volumes'
+    if: inputs.stage == 'all' || inputs.stage == 'volumes' || inputs.stage == 'policies'
     runs-on: xcode-27
     timeout-minutes: 120
     steps:
@@ -212,7 +212,9 @@ jobs:
           python-version: '3.12'
       - name: Install image export tool
         run: brew install age
-      - name: Verify and encrypt the iPhone X system disks
+      - name: Verify the iPhone X system disks and sign optional root policies
+        env:
+          STAGE: ${{ inputs.stage }}
         shell: bash
         run: |
           set -euo pipefail
@@ -225,12 +227,32 @@ jobs:
           [[ "$available" -gt $((18 * 1024 * 1024)) ]] || { echo '::error::iOS 16 image preparation needs 18 GiB of free space'; exit 1; }
           python3 device/ios16/prepare-volumes.py UniXNU "$scratch" 2>&1 | tee diagnostics/volumes.log
           cp "$scratch/volumes.json" diagnostics/
-          tar -czf - -C "$scratch" os.img systemos.img volumes.json | \
-            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-volumes.tar.gz.age"
+          if [[ "$STAGE" != volumes ]]; then
+            brew install openssl@3
+            git -C UniXNU submodule update --init --depth=1 kits/VerifiedRoot
+            python3 device/ios16/prepare-root-policies.py UniXNU "$scratch" "$scratch/policies" \
+              2>&1 | tee diagnostics/policies.log
+            cp "$scratch/policies/root-policies.json" diagnostics/
+            tar -czf - -C "$scratch/policies" root-policies.bin trusted-key.bin root-policies.json | \
+              age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-root-policies.tar.gz.age"
+          fi
+          if [[ "$STAGE" != policies ]]; then
+            tar -czf - -C "$scratch" os.img systemos.img volumes.json | \
+              age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-volumes.tar.gz.age"
+          fi
       - uses: actions/upload-artifact@v4
+        if: inputs.stage != 'policies'
         with:
           name: ios16-volumes-encrypted
           path: ${{ runner.temp }}/ios16-volumes.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: inputs.stage != 'volumes'
+        with:
+          name: ios16-root-policies-encrypted
+          path: ${{ runner.temp }}/ios16-root-policies.tar.gz.age
           if-no-files-found: error
           compression-level: 0
           retention-days: 7

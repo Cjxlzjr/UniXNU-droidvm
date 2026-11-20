@@ -20,11 +20,7 @@ from unixnu.userdata import attach, disk_blocks
 profile = tomllib.loads(Path(__file__).with_name('profile.toml').read_text())
 ctx = SimpleNamespace(board=profile, out_root=output / '.inputs')
 source = Ipsw(ctx, profile['ipsw']['url'])
-# Independently verified logical media digests after UDIF decompression.
-images = (
-    ('OS', 'os.img', 5635081728, '6e87bfcaa8eca952e00b719f333d1f1060715a63566112267ad8730e1ed98906'),
-    ('Cryptex1,SystemOS', 'systemos.img', 2743074816, '9cd738f3b0169055549df84ad6d8d13e50a2da39af618ce0522ca4e06df86849'),
-)
+pins = tomllib.loads(Path(__file__).with_name('volume-identity.toml').read_text())
 
 
 def digest(path):
@@ -53,7 +49,9 @@ def apfs_volumes(path):
 
 output.mkdir(parents=True, exist_ok=True)
 result = {}
-for component, filename, size, expected in images:
+for component, name in (('OS', 'os'), ('Cryptex1,SystemOS', 'systemos')):
+    pin = pins[name]
+    filename, size, expected = f'{name}.img', pin['bytes'], pin['sha256']
     path = output / filename
     if not (path.is_file() and path.stat().st_size == size and digest(path) == expected):
         member = source.extract(component)
@@ -71,8 +69,10 @@ for component, filename, size, expected in images:
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
-    result[filename] = {'component': component, 'bytes': size, 'sha256': expected,
-                        'apfs_volumes': apfs_volumes(path)}
+    identities = apfs_volumes(path)
+    if {volume['uuid'].upper() for volume in identities} != {pin['uuid']}:
+        raise ValueError(f'{filename}: APFS volume UUID differs from the pinned donor')
+    result[filename] = {'component': component, 'bytes': size, 'sha256': expected, 'apfs_volumes': identities}
 report = {'target': 'iPhone10,3 / iOS 16.7.16 (20H392)', 'files': result}
 content = json.dumps(report, indent=2) + '\n'
 (output / 'volumes.json').write_text(content)

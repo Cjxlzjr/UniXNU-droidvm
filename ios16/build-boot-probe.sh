@@ -49,7 +49,6 @@ MTOOLS_SKIP_CHECK=1 mcopy -i "$release/ios16-boot-probe.img" \
 cmp "$release/UniXNU.efi" "$staged/BOOTAA64.EFI"
 cmp "$release/DarwinBoot.efi" "$staged/DarwinBoot.efi"
 cmp "$work/kernel/kernel.macho" "$staged/kernel.macho"
-cmp "$work/payload/stage/EFI/UniXNU/Payloads/kernel.macho.adt" "$staged/kernel.macho.adt"
-python3 "$device/ios16/verify-probe.py" "$staged" "$release/ios16-boot-probe.img" \
+python3 "$device/ios16/verify-probe.py" "$staged" "$release/ios16-boot-probe.img" "$work/payload/payload.json" \
   >"$release/boot-probe.json"
 cat "$release/boot-probe.json"

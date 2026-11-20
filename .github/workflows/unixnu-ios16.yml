@@ -73,16 +73,8 @@ jobs:
           work=$(cd "$KERNEL_DIR/.." && pwd)
           tree="$work/tree"
           python3 device/ios16/verify-kernel.py "$KERNEL_DIR"
-          python3 - "$KERNEL_DIR/kernel.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          record = json.loads(Path(sys.argv[1]).read_text())
-          if not record['original_executable_sha256'].get('com.apple.filesystems.apfs'):
-              sys.exit('Prelink did not include the iPhone X APFS implementation')
-          PY
-          xcrun nm "$KERNEL_DIR/kernel.macho" | awk '/ T _vfs_getvfs_with_vfsops$/ { found=1 } END { exit !found }'
+          python3 device/ios16/verify-apfs.py "$tree" "$KERNEL_DIR/kernel.macho" \
+            UniXNU/out-ios16/ipsw/20H392/kernelcache.decompressed
           install -m 0644 device/scripts/audit-storage-interface-static.py "$tree/scripts/audit-storage-interface-static.py"
           python3 "$tree/scripts/audit-storage-interface-static.py" --ios16 --candidate "$work/kernel/kernel.macho" \
             2>&1 | tee diagnostics/storage.log

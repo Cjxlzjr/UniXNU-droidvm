@@ -12,6 +12,10 @@ the source executable and records that prelink was skipped. Both validate the
 Mach-O header and print the SHA-256. The workflow exports only the encrypted
 kernel and text diagnostics.
 
+The `storage` stage checks the actual APFS VFS import in the prelinked Mach-O,
+audits the donor block-storage ABI and compiles the read-only VirtIO driver for
+iOS 16. Hardware I/O and root mounting have their own acceptance checks.
+
 On a macOS machine with the CI toolchain and the pinned UniXNU checkout, run
 `bash ios16/build-kernel.sh kernel /path/to/UniXNU`. Outputs are under
 `out-ios16/droidvm-ios16/ios-16.7.16-20H392/droidvm_ios16/kernel/` in that
@@ -24,7 +28,11 @@ Run **UniXNU DroidVM iOS 16 boot stages** for the next build steps:
 | `loader` | ARM64 `UniXNU.efi` and legacy-SMP `DarwinBoot.efi`, with hashes. |
 | `probe` | An encrypted FAT boot disk with those loaders, the prelinked kernel and the original iPhone X identity. The report checks files extracted from the finished disk. |
 | `volumes` | Separately encrypted OS and SystemOS disk images with Apple input pins, decoded hashes and APFS volume UUIDs. |
+| `policies` | Owner-signed OS and SystemOS policies. The pinned C verifier authenticates the signature and every disk block. |
 
 The probe builds or restores its checked prelinked kernel before packaging.
+Pass `efi_run_id` to reuse a verified `ios16-efi` artifact from an earlier run.
+On macOS, `python3 ios16/prepare-root-policies.py UNIXNU_DIR VOLUMES_DIR OUTPUT_DIR`
+can take retained raw images and their `volumes.json` without fetching Apple inputs again.
 It exercises UEFI to XNU handoff. Mounting the root volumes and reaching the
 iPhone UI require Darwin 22 storage, root policy and display integration.
