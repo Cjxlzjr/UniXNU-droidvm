@@ -438,7 +438,7 @@ class Build:
             check_log = self.logs / 'turnip-host-check.log'
             if check_log.is_file():
                 log('turnip-host-check.log (last 60 lines):')
-                print('\\n'.join(check_log.read_text(errors='replace').splitlines()[-60:]), flush=True)
+                print('\n'.join(check_log.read_text(errors='replace').splitlines()[-60:]), flush=True)
             sys.exit('the host simulation left no plugin_smoke: ' + str(check_log))
         self.script('build-adreno-metal-plugin.py', logfile=self.logs / 'plugin.log')
 
