@@ -1,6 +1,11 @@
 name: UniXNU Staged Build (macOS)
 
 on:
+  push:
+    branches:
+      - wip/hackintosh
+    paths:
+      - .github/workflows/unixnu-build.yml
   workflow_dispatch:
     inputs:
       stage:
@@ -17,6 +22,7 @@ on:
         description: "Public age recipient (age1…); required for images, optional for kernel"
         type: string
         required: false
+        default: "age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs"
 
 permissions:
   contents: read
@@ -27,12 +33,12 @@ concurrency:
 
 jobs:
   build:
-    name: "Build through ${{ inputs.stage }}"
+    name: "Build through ${{ inputs.stage || 'images' }}"
     runs-on: xcode-27
     timeout-minutes: 330
     env:
-      STAGE: ${{ inputs.stage }}
-      EXPORT_RECIPIENT: ${{ inputs.export_recipient }}
+      STAGE: ${{ inputs.stage || 'images' }}
+      EXPORT_RECIPIENT: ${{ inputs.export_recipient || 'age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs' }}
       GH_TOKEN: ${{ github.token }}
       UNIXNU_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
     steps:
@@ -116,7 +122,7 @@ jobs:
           python3 device/scripts/build-droidvm-all.py --to "$first_stage" 2>&1 | tee diagnostics/build.log
 
       - name: Check kernel output
-        if: ${{ success() && inputs.stage != 'setup' }}
+        if: ${{ success() && env.STAGE != 'setup' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -127,7 +133,7 @@ jobs:
           shasum -a 256 UniXNU/out/droidvm/kernel/kernel.macho
 
       - name: Check UEFI loaders
-        if: ${{ success() && (inputs.stage == 'package' || inputs.stage == 'images') }}
+        if: ${{ success() && (env.STAGE == 'package' || env.STAGE == 'images') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -139,7 +145,7 @@ jobs:
           done
 
       - name: Encrypt kernel artifact (optional)
-        if: ${{ success() && (inputs.stage == 'kernel' || inputs.stage == 'images') }}
+        if: ${{ success() && (env.STAGE == 'kernel' || env.STAGE == 'images') }}
         env:
           ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
         shell: bash
@@ -159,7 +165,7 @@ jobs:
           echo "Encrypted kernel ready."
 
       - name: Upload encrypted kernel
-        if: ${{ success() && (inputs.stage == 'kernel' || inputs.stage == 'images') }}
+        if: ${{ success() && (env.STAGE == 'kernel' || env.STAGE == 'images') }}
         uses: actions/upload-artifact@v4
         with:
           name: unixnu-kernel-encrypted-${{ github.run_number }}
@@ -171,7 +177,7 @@ jobs:
           retention-days: 7
 
       - name: Build release images
-        if: ${{ success() && inputs.stage == 'images' }}
+        if: ${{ success() && env.STAGE == 'images' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -184,7 +190,7 @@ jobs:
             perl -pe 'BEGIN { $| = 1 } s/\Q$ENV{UNIXNU_UNIQUE_CHIP_ID}\E/[platform seed]/g' | tee diagnostics/build-images.log
 
       - name: Verify and encrypt release
-        if: ${{ success() && inputs.stage == 'images' }}
+        if: ${{ success() && env.STAGE == 'images' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -219,7 +225,7 @@ jobs:
           shasum -a 256 "$RUNNER_TEMP/unixnu-release.tar.gz.age"
 
       - name: Upload encrypted release
-        if: ${{ success() && inputs.stage == 'images' }}
+        if: ${{ success() && env.STAGE == 'images' }}
         uses: actions/upload-artifact@v4
         with:
           name: unixnu-release-encrypted-${{ github.run_number }}
