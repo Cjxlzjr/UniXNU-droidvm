@@ -36,3 +36,17 @@ On macOS, `python3 ios16/prepare-root-policies.py UNIXNU_DIR VOLUMES_DIR OUTPUT_
 can take retained raw images and their `volumes.json` without fetching Apple inputs again.
 It exercises UEFI to XNU handoff. Mounting the root volumes and reaching the
 iPhone UI require Darwin 22 storage, root policy and display integration.
+
+## DroidVM kernel handoff check
+
+Generate a separate probe configuration with `make-probe-config.py`, giving it
+the Android directory for `ios16-boot-probe.img` and the firmware path from
+the working DroidVM. The probe uses four vCPUs, the SBSA serial console and a
+single read-only boot disk. The configuration has automatic startup disabled.
+
+Use the existing 5120 MiB guest reservation. Before a probe boot, check that
+the previous guest is stopped, the pool has at least 2560 free 2 MiB pages and
+no active VM owner, and the installed Gunyah and crosvm still match the working
+configuration. In the serial log, check the CPU types are `SSSS`, the loader
+hands off the kernel, and XNU emits its own log. Stop the probe normally and
+confirm the pool pages return before starting another guest.
