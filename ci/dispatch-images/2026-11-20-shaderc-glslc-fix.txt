@@ -1,0 +1,6 @@
+Request: UniXNU Staged Build (macOS)
+Stage: images
+Reason: Fix missing glslc in Turnip host shader smoke generator.
+Includes: shaderc, spirv-tools, and direct hostsim failure logs.
+Original failing run: 44712731579
+Requested branch: wip/hackintosh
