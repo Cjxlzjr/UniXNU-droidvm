@@ -281,7 +281,7 @@ staged_memory.write_text(memory)
 
 cxx = recipe('iokit/DEVELOPMENT/IOPlatformExpert.cpo.json')
 c = recipe('bsd/DEVELOPMENT/bsd_init.o.json')
-includes = ['-I', str(ADRENO), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/droidvm'),
+includes = ['-DDROIDVM_LEGACY_17=1', '-I', str(ADRENO), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/droidvm'),
             '-I', str(ROOT / '.cache/xnu-work/osfmk')]
 warnings = ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
             '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier']
