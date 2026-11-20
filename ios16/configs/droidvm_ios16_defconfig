@@ -2,5 +2,3 @@
 CONFIG_XNU_SOURCE_PTHREAD=n
 CONFIG_XNU_NATIVE_AES=n
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
-# Map the guest RAM reservation described by DarwinBoot, not the BCM2837 MMIO address.
-CONFIG_XNU_DT_PANIC_REGION=y
