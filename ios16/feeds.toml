@@ -6,7 +6,7 @@ local = "../socs/crosvm-gunyah"
 # Darwin 22 compile and sparse prelink adaptations, selected in patches/series.
 [[source]]
 name = "xnu8796-patches"
-kind = "kit"
+kind = "patch"
 git = "https://github.com/wh1stl3/UniXNU-nuwa.git"
 commit = "a840aaebb96dd3624c4d06f35f23960664fded64"
 path = "patches/xnu"
