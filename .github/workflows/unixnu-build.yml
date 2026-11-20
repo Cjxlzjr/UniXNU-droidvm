@@ -56,7 +56,9 @@ jobs:
           if [[ "$STAGE" == images ]]; then
             brew install bison flex glslang gnu-sed pkgconf
             xcrun --sdk iphoneos clang -target arm64-apple-ios17.0 -std=c11 \
-              -D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE -Werror -fsyntax-only -x c - <<'C'
+              -D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE -Werror \
+              -dynamiclib -Wl,-undefined,dynamic_lookup -Wl,-fixup_chains \
+              -o "$RUNNER_TEMP/darwin-sdk-probe.dylib" -x c - <<'C'
           #include <machine/endian.h>
           #include <dlfcn.h>
           #if !defined(__DARWIN_BYTE_ORDER) || __DARWIN_BYTE_ORDER != __DARWIN_LITTLE_ENDIAN
@@ -66,7 +68,10 @@ jobs:
               Dl_info info;
               return dladdr(address, &info);
           }
+          extern void optional_entrypoint(void) __attribute__((weak_import));
+          void (*probe_weak_import)(void) = optional_entrypoint;
           C
+            xcrun otool -l "$RUNNER_TEMP/darwin-sdk-probe.dylib" | grep -F LC_DYLD_CHAINED_FIXUPS
           fi
           if [[ -n "$EXPORT_RECIPIENT" || "$STAGE" == images ]]; then
             if [[ ! "$EXPORT_RECIPIENT" =~ ^age1[0-9a-z]{58}$ ]]; then

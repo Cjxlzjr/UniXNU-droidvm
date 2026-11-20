@@ -18,3 +18,13 @@ diff --git a/src/util/u_endian.h b/src/util/u_endian.h
 -#ifdef HAVE_ENDIAN_H
 +#if defined(HAVE_ENDIAN_H) && !defined(__APPLE__)
  #include <endian.h>
+diff --git a/src/freedreno/vulkan/meson.build b/src/freedreno/vulkan/meson.build
+--- a/src/freedreno/vulkan/meson.build
++++ b/src/freedreno/vulkan/meson.build
+@@ -150,2 +150,6 @@
+   tu_link_args += ['-Wl,-undefined,dynamic_lookup']
++  if meson.is_cross_build()
++    # The guest weak-import rewriter operates on the chained fixups table.
++    tu_link_args += ['-Wl,-fixup_chains']
++  endif
+ endif
