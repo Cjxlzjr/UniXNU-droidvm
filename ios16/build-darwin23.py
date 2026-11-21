@@ -241,12 +241,16 @@ class HybridBuild(base.Build):
         ])
         self.apply_data_uuid()
 
+    def step_reference(self):
+        super().step_reference()
+        verify_kernel_mach_ports(self.tree / 'build/reference-candidate/kernel.macho')
+
     def run_kernel(self):
         self.unixnu_cmd('ipsw', 'fetch', 'KernelCache', logfile=self.logs / 'kernel-donor.log')
+        self.run_step('reference', self.step_reference)
         self.small_iphone_members()
         for step, method in [('volumes', self.step_volumes), ('policies', self.step_policies),
-                             ('data-base', self.step_data_base), ('reference', self.step_reference),
-                             ('kernel', self.step_kernel)]:
+                             ('data-base', self.step_data_base), ('kernel', self.step_kernel)]:
             self.run_step(step, method)
         self.verify_kernel()
 

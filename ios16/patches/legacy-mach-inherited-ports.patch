@@ -1,7 +1,15 @@
 diff --git a/osfmk/kern/ipc_tt.c b/osfmk/kern/ipc_tt.c
 --- a/osfmk/kern/ipc_tt.c
 +++ b/osfmk/kern/ipc_tt.c
-@@ -145,6 +145,8 @@
+@@ -70,6 +70,7 @@
+ 
+ #include <ipc/port.h>
+ #include <mach/mach_types.h>
++#include <mach/message.h>
+ #include <mach/boolean.h>
+ #include <mach/kern_return.h>
+ #include <mach/mach_param.h>
+@@ -145,6 +146,8 @@
  ipc_port_t convert_task_to_port_with_flavor(task_t task, mach_task_flavor_t flavor, task_grp_t grp);
  kern_return_t task_set_special_port(task_t task, int which, ipc_port_t port);
  kern_return_t task_get_special_port(task_t task, int which, ipc_port_t *portp);
@@ -10,7 +18,7 @@ diff --git a/osfmk/kern/ipc_tt.c b/osfmk/kern/ipc_tt.c
  
  /*
   *	Routine:	ipc_task_init
-@@ -2393,6 +2395,55 @@
+@@ -2393,6 +2396,59 @@
  
  	itk_unlock(task);
  
@@ -35,13 +43,13 @@ diff --git a/osfmk/kern/ipc_tt.c b/osfmk/kern/ipc_tt.c
 +		return KERN_INVALID_ARGUMENT;
 +	}
 +	for (mach_msg_type_number_t i = 0; i < count; ++i) {
-+		slot[i] = ports[i];
++		slot[i] = ports[i].port;
 +	}
 +
 +	kern_return_t result = _kernelrpc_mach_ports_register3(task, slot[0], slot[1], slot[2]);
 +	if (result == KERN_SUCCESS && count != 0) {
 +		/* The rights now belong to the task; MIG transfers the array on success. */
-+		kfree_type(mach_port_t, count, ports);
++		mach_port_array_free(ports, count);
 +	}
 +	return result;
 +}
@@ -52,14 +60,18 @@ diff --git a/osfmk/kern/ipc_tt.c b/osfmk/kern/ipc_tt.c
 +	mach_port_array_t       *ports_out,
 +	mach_msg_type_number_t  *count_out)
 +{
-+	ipc_port_t *ports = kalloc_type(ipc_port_t, TASK_PORT_REGISTER_MAX, Z_WAITOK | Z_ZERO);
++	ipc_port_t slot[TASK_PORT_REGISTER_MAX];
++	mach_port_array_t ports = mach_port_array_alloc(TASK_PORT_REGISTER_MAX, Z_WAITOK | Z_ZERO);
 +	if (ports == NULL) {
 +		return KERN_RESOURCE_SHORTAGE;
 +	}
-+	kern_return_t result = _kernelrpc_mach_ports_lookup3(task, &ports[0], &ports[1], &ports[2]);
++	kern_return_t result = _kernelrpc_mach_ports_lookup3(task, &slot[0], &slot[1], &slot[2]);
 +	if (result != KERN_SUCCESS) {
-+		kfree_type(ipc_port_t, TASK_PORT_REGISTER_MAX, ports);
++		mach_port_array_free(ports, TASK_PORT_REGISTER_MAX);
 +		return result;
++	}
++	for (mach_msg_type_number_t i = 0; i < TASK_PORT_REGISTER_MAX; ++i) {
++		ports[i].port = slot[i];
 +	}
 +	*ports_out = ports;
 +	*count_out = TASK_PORT_REGISTER_MAX;

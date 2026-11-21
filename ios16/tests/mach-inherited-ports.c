@@ -21,7 +21,10 @@ struct port {
 };
 typedef struct port *ipc_port_t;
 typedef ipc_port_t mach_port_t;
-typedef mach_port_t *mach_port_array_t;
+typedef struct {
+	mach_port_t port;
+} mach_port_ool_t;
+typedef mach_port_ool_t *mach_port_array_t;
 struct task {
 	bool ipc_active;
 	bool locked;
@@ -56,8 +59,8 @@ deallocate(void *bytes, size_t count)
 	free(bytes);
 }
 
-#define kalloc_type(type, count, flags) allocate(count, sizeof(type), flags)
-#define kfree_type(type, count, bytes) deallocate(bytes, count)
+#define mach_port_array_alloc(count, flags) allocate(count, sizeof(mach_port_ool_t), flags)
+#define mach_port_array_free(bytes, count) deallocate(bytes, count)
 
 static void itk_lock(task_t task) { assert(!task->locked); task->locked = true; }
 static void itk_unlock(task_t task) { assert(task->locked); task->locked = false; }
@@ -94,33 +97,33 @@ main(void)
 	task.itk_registered[2] = &old;
 
 	/* Registration transfers the supplied right, clears unused slots and frees the array. */
-	mach_port_t *request = kalloc_type(mach_port_t, 1, Z_WAITOK | Z_ZERO);
-	request[0] = &good;
+	mach_port_array_t request = mach_port_array_alloc(1, Z_WAITOK | Z_ZERO);
+	request[0].port = &good;
 	assert(mach_ports_register(&task, request, 1) == KERN_SUCCESS);
 	assert(live_allocations == 0 && good.sends == 1 && old.sends == 0);
 	assert(task.itk_registered[0] == &good && task.itk_registered[1] == IP_NULL);
 	assert(task.itk_registered[2] == IP_NULL);
 
 	/* Lookup returns its own array and a duplicated send reference. */
-	mach_port_t *reply = NULL;
+	mach_port_array_t reply = NULL;
 	mach_msg_type_number_t count = 0;
 	assert(mach_ports_lookup(&task, &reply, &count) == KERN_SUCCESS);
 	assert(reply != NULL && count == TASK_PORT_REGISTER_MAX && good.sends == 2);
-	assert(reply[0] == &good && reply[1] == IP_NULL && reply[2] == IP_NULL);
-	ipc_port_release_send(reply[0]);
-	kfree_type(mach_port_t, count, reply);
+	assert(reply[0].port == &good && reply[1].port == IP_NULL && reply[2].port == IP_NULL);
+	ipc_port_release_send(reply[0].port);
+	mach_port_array_free(reply, count);
 
 	/* A failed call leaves the incoming array and rights with MIG for cleanup. */
-	request = kalloc_type(mach_port_t, 1, Z_WAITOK | Z_ZERO);
-	request[0] = &immovable;
+	request = mach_port_array_alloc(1, Z_WAITOK | Z_ZERO);
+	request[0].port = &immovable;
 	assert(mach_ports_register(&task, request, 1) == KERN_INVALID_RIGHT);
 	assert(mach_ports_register(&task, request, TASK_PORT_REGISTER_MAX + 1) == KERN_INVALID_ARGUMENT);
 	assert(mach_ports_register(&task, NULL, 1) == KERN_INVALID_ARGUMENT);
 	assert(mach_ports_register(TASK_NULL, request, 1) == KERN_INVALID_ARGUMENT);
-	request[0] = &good;
+	request[0].port = &good;
 	assert(mach_ports_register(&inactive, request, 1) == KERN_INVALID_ARGUMENT);
 	assert(task.itk_registered[0] == &good && immovable.sends == 1 && live_allocations == 1);
-	kfree_type(mach_port_t, 1, request);
+	mach_port_array_free(request, 1);
 
 	reply = NULL;
 	count = 99;
