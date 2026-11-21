@@ -50,21 +50,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang vulkan-headers shaderc
+          brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang vulkan-headers shaderc spirv-tools
           echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
           echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
           command -v glslc || {
             echo '::error::Missing glslc from shaderc, required by the Turnip host smoke test'; exit 1;
           }
           glslc --version
+          command -v spirv-val || {
+            echo '::error::Missing spirv-val from spirv-tools, required to validate the smoke shaders'; exit 1;
+          }
+          spirv-val --version
           # check-turnip-darwin-host.py compiles vulkan_smoke.c with -I /opt/homebrew/include.
-          test -f /opt/homebrew/include/vulkan/vulkan.h || {
+          test -s /opt/homebrew/include/vulkan/vulkan.h || {
             echo '::error::Missing Vulkan headers required by Turnip host smoke test'; exit 1;
           }
+          printf '#include <vulkan/vulkan.h>\nint main(void) { return VK_SUCCESS; }\n' | \
+            xcrun clang -x c -std=c11 -I /opt/homebrew/include -fsyntax-only -
           if [[ "$GPU_STAGE" == metal ]]; then
             command -v rustup || { echo '::error::rustup missing on xcode-27 runner'; exit 1; }
-            rustup toolchain install 1.98.0 --profile minimal
-            rustup target add aarch64-apple-ios --toolchain 1.98.0
+            rust_version=1.98.0
+            rust_target=aarch64-apple-ios
+            rustup toolchain install "$rust_version" --profile minimal --target "$rust_target"
+            printf 'pub fn probe() -> std::vec::Vec<u8> { std::vec::Vec::new() }\n' | \
+              IPHONEOS_DEPLOYMENT_TARGET=16.0 rustc "+$rust_version" --target "$rust_target" \
+                --crate-name bridge_sdk_probe --crate-type lib --emit metadata \
+                -o "$RUNNER_TEMP/bridge_sdk_probe.rmeta" -
           fi
           git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
           git -C UniXNU checkout --detach "$CORE_REVISION"
@@ -137,6 +148,6 @@ jobs:
             UniXNU/out-ios16-darwin23-metal/droidvm/build-all/logs/
             UniXNU/out-ios16-darwin23-metal/droidvm/tree/build/turnip-darwin-host/*.log
             UniXNU/out-ios16-darwin23-metal/droidvm/tree/.cache/mesa-tu-*-build.log
-            UniXNU/out-ios16-darwin23-metal/droidvm/tree/build/adreno-metal-bridge/ios/build-ios.log
+            UniXNU/out-ios16-darwin23-metal/droidvm/tree/build/adreno-metal-bridge/build-*.log
           if-no-files-found: ignore
           retention-days: 7
