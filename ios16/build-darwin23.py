@@ -278,10 +278,20 @@ class HybridBuild(base.Build):
             self.run_step(step, method)
         self.verify_kernel()
         if self.gpu_stage == 'metal':
-            for name, method in [('gpu-plugin', self.step_plugin),
-                                 ('gpu-seed', self.step_gpu_seed),
-                                 ('gpu-trust', self.step_gpu_trust)]:
-                self.run_step(name, method)
+            self.run_step('gpu-plugin', self.step_plugin)
+            self.run_step('gpu-seed', self.step_gpu_seed)
+            self.run_step('gpu-trust', self.step_gpu_trust)
+
+    def step_plugin(self):
+        super().step_plugin()
+        self.verify_turnip_host_check()
+
+    def verify_turnip_host_check(self):
+        checks = self.stamps / 'checks.json'
+        status = json.loads(checks.read_text()).get('turnip-host') if checks.is_file() else None
+        if status != 'PASS':
+            raise ValueError(f'Turnip host tests did not pass ({status or "missing result"}); '
+                             f'see {self.logs / "turnip-host-check.log"}')
 
     def verify_kernel(self):
         image = self.work / 'kernel/kernel.macho'
@@ -296,6 +306,8 @@ class HybridBuild(base.Build):
 
     def step_payload(self):
         self.verify_kernel()
+        if self.gpu_stage == 'metal':
+            self.verify_turnip_host_check()
         if not (self.tree / 'build/iphone-x-identity.im4p').is_file():
             self.small_iphone_members()
         seed = json.loads((self.tree / 'build/owner-data-fixture/seed.json').read_text())

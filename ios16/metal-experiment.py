@@ -17,6 +17,14 @@ PATCHES = {
         ("'ios': 'arm64-apple-ios17.0'", "'ios': 'arm64-apple-ios16.0'"),
         ("'MinimumOSVersion': '27.0' if IOS27 else '17.0'",
          "'MinimumOSVersion': '27.0' if IOS27 else '16.0'"),
+        ("frontend = (ROOT / 'drivers/AdrenoMetal/NativeBridgeMetalFrontend.mm').read_text()",
+         "frontend_source = ROOT / 'drivers/AdrenoMetal/NativeBridgeMetalFrontend.mm'\n"
+         "frontend = frontend_source.read_text()\n"
+         "if TARGET == 'ios':\n"
+         "    default_language = '(NSUInteger)MTLLanguageVersion3_1;'\n"
+         "    if frontend.count(default_language) != 1:\n"
+         "        raise SystemExit(f'{frontend_source}: expected one Metal 3.1 default')\n"
+         "    frontend = frontend.replace(default_language, '(NSUInteger)MTLLanguageVersion3_0;')"),
     ],
     "scripts/build-adreno-metal-bridge.py": [
         ("IPHONEOS_DEPLOYMENT_TARGET='27.0' if args.target == 'ios27' else '17.0'",

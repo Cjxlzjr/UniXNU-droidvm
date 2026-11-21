@@ -135,6 +135,7 @@ jobs:
             diagnostics/
             UniXNU/out-ios16-darwin23-metal/droidvm/logs/
             UniXNU/out-ios16-darwin23-metal/droidvm/build-all/logs/
+            UniXNU/out-ios16-darwin23-metal/droidvm/tree/build/turnip-darwin-host/*.log
             UniXNU/out-ios16-darwin23-metal/droidvm/tree/.cache/mesa-tu-*-build.log
             UniXNU/out-ios16-darwin23-metal/droidvm/tree/build/adreno-metal-bridge/ios/build-ios.log
           if-no-files-found: ignore
