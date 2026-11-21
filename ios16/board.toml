@@ -68,6 +68,7 @@ loader = "driver"
 title = "DroidVM: iPhone X iOS 16 kernel probe"
 dram_size = "0x13fa00000"
 kernel_args = ["debug=0x10a", "serial=3", "-v", "keepsyms=1", "armcpu-diagnostics=1"]
+trust_cache_sha256 = ["367e051548f9f0407fa9fe9d40007fa4e7c5ff27c45f5a7a30cedf344e24d98e"]
 
 [payload.adt]
 tool = "scripts/make-droidvm-adt.py"

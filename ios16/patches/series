@@ -14,6 +14,7 @@ arch:../../../patches/xnu/native-4k-user-abi.patch
 arch:../../../patches/xnu/native-arm-pan.patch
 arch:../../../patches/xnu/non-apple-cache-monitor.patch
 arch:../../../patches/xnu/native-dt-panic-region.patch
+arch:../../../patches/xnu/native-trust-cache-runtime.patch
 8796-droidvm-panic-region.patch
 8796-droidvm-sbsa-uart.patch
 component:xnu8796-patches/8796-non-apple-iommu-bootstrap.patch

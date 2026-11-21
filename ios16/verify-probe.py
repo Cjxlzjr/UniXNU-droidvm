@@ -19,7 +19,8 @@ entry = next(entry for entry in config['entry'] if entry['id'] == config['boot']
 if config['driver'] != [{'path': 'Payloads/DarwinBoot.efi'}] or entry['path'] != 'Payloads/kernel.macho':
     sys.exit('FAT configuration does not route the default entry through DarwinBoot')
 blob = (staged / 'kernel.macho.adt').read_bytes()
-if hashlib.sha256(blob).hexdigest() != json.loads(payload_record.read_text())['adt_sha256']:
+record = json.loads(payload_record.read_text())
+if hashlib.sha256(blob).hexdigest() != record['adt_sha256']:
     sys.exit('FAT device tree differs from the payload builder record')
 (root, children), end = adt.read_adt(blob)
 nodes = {props['name'].rstrip(b'\0'): props for props, _ in children}
@@ -32,6 +33,18 @@ if (end != len(blob) or root['model'].rstrip(b'\0') != b'iPhone10,3'
     sys.exit('ADT does not carry the D22AP iPhone X identity')
 if struct.unpack('<I', nodes[b'chosen']['darwinboot-fdt'])[0] != 7:
     sys.exit('ADT must enable the FDT memory, device and CPU updates')
+
+board = tomllib.loads(Path(__file__).with_name('board.toml').read_text())
+trust = staged / 'kernel.macho.trustcache'
+if not trust.is_file():
+    sys.exit('FAT is missing the pinned iPhone X static trust cache')
+trust_hash = hashlib.sha256(trust.read_bytes()).hexdigest()
+if trust_hash != record.get('trust_cache_sha256') or trust_hash not in board['payload']['trust_cache_sha256']:
+    sys.exit('FAT trust cache differs from the pinned iPhone X payload')
+chosen = next(kids for props, kids in children if props['name'].rstrip(b'\0') == b'chosen')
+memory_maps = [props for props, _ in chosen if props['name'].rstrip(b'\0') == b'memory-map']
+if len(memory_maps) != 1 or memory_maps[0].get('TrustCache') != bytes(16):
+    sys.exit('ADT must declare the TrustCache address and size for DarwinBoot to fill')
 
 files = {}
 for item in [*sorted(staged.iterdir()), disk]:

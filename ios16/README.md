@@ -26,7 +26,7 @@ Run **UniXNU DroidVM iOS 16 boot stages** for the next build steps:
 | Stage | Verified output |
 | --- | --- |
 | `loader` | ARM64 `UniXNU.efi` and legacy-SMP `DarwinBoot.efi`, with hashes. |
-| `probe` | An encrypted FAT boot disk with those loaders, the prelinked kernel and the original iPhone X identity. The report checks files extracted from the finished disk. |
+| `probe` | An encrypted FAT boot disk with those loaders, the prelinked kernel, the iPhone X identity and the original 20H392 static trust cache. The report verifies all of them after extracting the files from the finished disk. |
 | `volumes` | Separately encrypted OS and SystemOS disk images with Apple input pins, decoded hashes and APFS volume UUIDs. |
 | `policies` | Owner-signed OS and SystemOS policies. The pinned C verifier authenticates the signature and every disk block. |
 
@@ -34,8 +34,12 @@ The probe builds or restores its checked prelinked kernel before packaging.
 Pass `efi_run_id` to reuse a verified `ios16-efi` artifact from an earlier run.
 On macOS, `python3 ios16/prepare-root-policies.py UNIXNU_DIR VOLUMES_DIR OUTPUT_DIR`
 can take retained raw images and their `volumes.json` without fetching Apple inputs again.
-It exercises UEFI to XNU handoff. Mounting the root volumes and reaching the
-iPhone UI require Darwin 22 storage, root policy and display integration.
+The probe exercises the UEFI to XNU handoff. It wraps the original static
+trust cache from the D22AP firmware, pins both the IPSW member and completed
+bundle, and enables the stock Darwin 22 trust cache initializer before
+lockdown. AppleImage4 policy initialization happens earlier in the kernel;
+its runtime boot metadata is a separate input. Mounting the root volumes and
+reaching the iPhone UI also require Darwin 22 storage and display integration.
 
 ## DroidVM kernel handoff check
 
