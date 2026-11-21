@@ -1,0 +1,133 @@
+name: UniXNU iOS 16 Darwin 23 Metal experiment
+
+on:
+  push:
+    branches: [experiment/ios16-darwin23-metal]
+  workflow_dispatch:
+    inputs:
+      gpu_stage:
+        description: '3d = VirtIO 3D self-test without Metal; metal = full plugin build'
+        type: choice
+        options: [3d, metal]
+        default: metal
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ios16-darwin23-metal-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CORE_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
+  EXPORT_RECIPIENT: age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs
+  BUILD_DIR: UniXNU/out-ios16-darwin23-metal
+  EFI_DIR: ios16-efi
+  GPU_STAGE: ${{ inputs.gpu_stage || 'metal' }}
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate isolated experiment scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py
+          python3 device/ios16/metal-experiment.py selftest
+          python3 device/ios16/metal-trust.py --selftest
+          test "$GPU_STAGE" = metal -o "$GPU_STAGE" = 3d
+      - name: Install pinned build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          if [[ "$GPU_STAGE" == metal ]]; then
+            command -v rustup || { echo '::error::rustup missing on xcode-27 runner'; exit 1; }
+            rustup toolchain install 1.98.0 --profile minimal
+            rustup target add aarch64-apple-ios --toolchain 1.98.0
+          fi
+          git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
+          git -C UniXNU checkout --detach "$CORE_REVISION"
+          git -C UniXNU submodule update --init --recursive --filter=blob:none
+          xcodebuild -version
+      - name: Reuse verified SMP EFI loaders
+        uses: actions/download-artifact@v4
+        with:
+          name: ios16-efi
+          run-id: 44771150733
+          github-token: ${{ github.token }}
+          path: ios16-efi
+      - name: Configure isolated iOS16 experiment tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          python3 device/ios16/build-darwin23.py configure --gpu-stage "$GPU_STAGE" --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/configure.log
+          python3 device/ios16/check-mach-inherited-ports.py "$BUILD_DIR/droidvm/tree/refer/xnu" 2>&1 | tee diagnostics/mach-inherited-ports.log
+      - name: Build iOS16 kernel, Data seed and optional signed Metal plugin
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ADRENO_METAL_REPLAY: '0'
+        run: |
+          set -euo pipefail
+          python3 device/ios16/build-darwin23.py kernel --gpu-stage "$GPU_STAGE" --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/kernel-metal.log
+      - name: Audit iOS16 plugin and original Apple trust modules
+        if: env.GPU_STAGE == 'metal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin="$BUILD_DIR/droidvm/tree/build/adreno-metal-plugin"
+          python3 device/ios16/metal-experiment.py audit "$plugin" 2>&1 | tee diagnostics/plugin-ios16-mach-o.json
+          cp "$plugin/trust.json" diagnostics/plugin-trust.json
+          cp "$BUILD_DIR/droidvm/tree/build/ios16-metal/owner-trust.json" diagnostics/owner-trust.json
+          cp "$BUILD_DIR/droidvm/tree/build/ios16-metal/deployment-anchors.json" diagnostics/deployment-anchors.json
+      - name: Assemble and verify isolated FAT boot disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 device/ios16/build-darwin23.py payload --gpu-stage "$GPU_STAGE" --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/payload.log
+          cp "$BUILD_DIR/droidvm/release/release.json" diagnostics/release.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path("diagnostics/release.json").read_text())
+          assert report["gpu_stage"] in ("3d","metal")
+          assert report["fat"]["kernel.macho"]["sha256"]
+          if report["gpu_stage"]=="metal":
+              assert report["gpu_plugin"]["cdhash"] and report["fat"]["kernel.macho.trustcache"]["sha256"] == report["trust_cache_sha256"]
+          print("PASS: isolated experiment FAT members, trusted plugin metadata and original volume identity")
+          PY
+          tar -czf - -C "$BUILD_DIR/droidvm/release" ios16-darwin23.img release.json | \
+            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-darwin23-$GPU_STAGE.tar.gz.age"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-darwin23-${{ env.GPU_STAGE }}-encrypted
+          path: ${{ runner.temp }}/ios16-darwin23-${{ env.GPU_STAGE }}.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-darwin23-metal-build-logs
+          path: |
+            diagnostics/
+            UniXNU/out-ios16-darwin23-metal/droidvm/logs/
+            UniXNU/out-ios16-darwin23-metal/droidvm/build-all/logs/
+            UniXNU/out-ios16-darwin23-metal/droidvm/tree/.cache/mesa-tu-*-build.log
+            UniXNU/out-ios16-darwin23-metal/droidvm/tree/build/adreno-metal-bridge/ios/build-ios.log
+          if-no-files-found: ignore
+          retention-days: 7
