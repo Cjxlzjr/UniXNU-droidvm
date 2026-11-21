@@ -25,6 +25,8 @@ spec.loader.exec_module(base)
 CORE_REVISION = 'dba62c1ca53cd04c25b0e501afff31d5ffe2e20e'
 KERNEL_DONOR = 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7'
 TRUST_SHA256 = '2d97b2a4e114c7303f5521814b8ae67bb85c66e4628fefbb13fe38a3fdba555d'
+IPAD_OS_UUID = '04769D26-2CA0-4825-B443-E2E5F88300F2'
+IPAD_SYSTEMOS_UUID = '8846FE78-2910-4297-AF97-D59BB6F8FC16'
 EFI_PINS = {
     'UniXNU.efi': 'f63ae4b9d968288cfe44df40c4282221dbefe13fb5a86dcb55544cee6d55efe4',
     'DarwinBoot.efi': 'c25cdb24f0f3c1568308325764bbc10e64e12d3b4566473ae03ca442a4cb9958',
@@ -90,14 +92,30 @@ def substitute(source, replacements):
     return text
 
 
+def verify_kernel_volume_ids(image):
+    with image.open('rb') as stream:
+        contents = stream.read()
+    for volume, previous in [('os', IPAD_OS_UUID), ('systemos', IPAD_SYSTEMOS_UUID)]:
+        selected = PINS[volume]['uuid']
+        if selected.encode() + b'\0' not in contents or previous.encode() + b'\0' in contents:
+            raise ValueError(f'The linked kernel must select the iPhone {volume} APFS volume {selected}')
+
+
 def stage_device(core, directory):
     shutil.copytree(DEVICE, directory, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('.git', '.cache', '__pycache__', 'build', 'unixnu.lock'))
-    (directory / 'board.toml').write_text(derived_board((DEVICE / 'board.toml').read_text()))
+    board = derived_board((DEVICE / 'board.toml').read_text())
+    (directory / 'board.toml').write_text(board)
+    defconfig = directory / 'configs' / tomllib.loads(board)['kernel']['defconfig']
+    key = 'CONFIG_XNU_OWNER_CACHE_VOLUME_UUID'
+    lines = [line for line in defconfig.read_text().splitlines()
+             if not line.startswith((f'{key}=', f'# {key} is not set'))]
+    # The generated owner-data-volume.h takes precedence over kern_exec.c's fallback UUID.
+    lines.append(f'{key}="{PINS["systemos"]["uuid"]}"')
+    defconfig.write_text('\n'.join(lines) + '\n')
     patches = directory / 'patches/xnu'
     shutil.copytree(core / 'patches/xnu', patches, dirs_exist_ok=True)
-    old_uuids = [('04769D26-2CA0-4825-B443-E2E5F88300F2', PINS['os']['uuid']),
-                 ('8846FE78-2910-4297-AF97-D59BB6F8FC16', PINS['systemos']['uuid'])]
+    old_uuids = [(IPAD_OS_UUID, PINS['os']['uuid']), (IPAD_SYSTEMOS_UUID, PINS['systemos']['uuid'])]
     for file in ('offline-owner-cache-carrier.patch', 'offline-owner-systemos-mount.patch'):
         target = patches / file
         target.write_text(substitute(target, old_uuids))
@@ -229,6 +247,7 @@ class HybridBuild(base.Build):
         report = json.loads(image.with_suffix('.json').read_text())
         if report['original_sha256'] != KERNEL_DONOR or base.sha256(image) != report['candidate_sha256']:
             raise ValueError('Kernel does not match its prelink record and the audited donor')
+        verify_kernel_volume_ids(image)
 
     def step_payload(self):
         self.verify_kernel()
