@@ -80,6 +80,7 @@ jobs:
       - name: Restore or build the signed root, Data seed and kernel
         id: kernel
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
           CACHE_HIT: ${{ steps.checkpoint.outputs.cache-hit }}
           CHECKPOINT_KEY: ${{ steps.fingerprint.outputs.key }}
