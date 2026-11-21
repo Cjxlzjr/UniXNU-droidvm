@@ -1,0 +1,96 @@
+diff --git a/osfmk/kern/ipc_tt.c b/osfmk/kern/ipc_tt.c
+--- a/osfmk/kern/ipc_tt.c
++++ b/osfmk/kern/ipc_tt.c
+@@ -145,6 +145,8 @@
+ ipc_port_t convert_task_to_port_with_flavor(task_t task, mach_task_flavor_t flavor, task_grp_t grp);
+ kern_return_t task_set_special_port(task_t task, int which, ipc_port_t port);
+ kern_return_t task_get_special_port(task_t task, int which, ipc_port_t *portp);
++kern_return_t _kernelrpc_mach_ports_register3(task_t, mach_port_t, mach_port_t, mach_port_t);
++kern_return_t _kernelrpc_mach_ports_lookup3(task_t, ipc_port_t *, ipc_port_t *, ipc_port_t *);
+ 
+ /*
+  *	Routine:	ipc_task_init
+@@ -2393,6 +2395,55 @@
+ 
+ 	itk_unlock(task);
+ 
++	return KERN_SUCCESS;
++}
++
++
++/*
++ * The iOS 16 guest uses the out-of-line Mach port arrays sent by the
++ * original libsyscall stubs. Keep the modern checks and right handling;
++ * only adapt the array and its ownership for the legacy MIG server.
++ */
++kern_return_t
++mach_ports_register(
++	task_t                  task,
++	mach_port_array_t       ports,
++	mach_msg_type_number_t  count)
++{
++	mach_port_t slot[TASK_PORT_REGISTER_MAX] = { IP_NULL };
++
++	if (count > TASK_PORT_REGISTER_MAX || (count != 0 && ports == NULL)) {
++		return KERN_INVALID_ARGUMENT;
++	}
++	for (mach_msg_type_number_t i = 0; i < count; ++i) {
++		slot[i] = ports[i];
++	}
++
++	kern_return_t result = _kernelrpc_mach_ports_register3(task, slot[0], slot[1], slot[2]);
++	if (result == KERN_SUCCESS && count != 0) {
++		/* The rights now belong to the task; MIG transfers the array on success. */
++		kfree_type(mach_port_t, count, ports);
++	}
++	return result;
++}
++
++kern_return_t
++mach_ports_lookup(
++	task_t                  task,
++	mach_port_array_t       *ports_out,
++	mach_msg_type_number_t  *count_out)
++{
++	ipc_port_t *ports = kalloc_type(ipc_port_t, TASK_PORT_REGISTER_MAX, Z_WAITOK | Z_ZERO);
++	if (ports == NULL) {
++		return KERN_RESOURCE_SHORTAGE;
++	}
++	kern_return_t result = _kernelrpc_mach_ports_lookup3(task, &ports[0], &ports[1], &ports[2]);
++	if (result != KERN_SUCCESS) {
++		kfree_type(ipc_port_t, TASK_PORT_REGISTER_MAX, ports);
++		return result;
++	}
++	*ports_out = ports;
++	*count_out = TASK_PORT_REGISTER_MAX;
+ 	return KERN_SUCCESS;
+ }
+ 
+diff --git a/osfmk/mach/task.defs b/osfmk/mach/task.defs
+--- a/osfmk/mach/task.defs
++++ b/osfmk/mach/task.defs
+@@ -129,10 +129,14 @@
+ 
+ 
+ /*
++ * Match the older iOS 16 wire format in the guest kernel. Keep the
++ * modern private client declarations available to libsyscall builds.
++ */
++/*
+  *	Stash a handful of ports for the target task; child
+  *	tasks inherit this stash at task_create time.
+  */
+-#if LIBSYSCALL_INTERFACE
++#if LIBSYSCALL_INTERFACE || KERNEL_SERVER || KOBJECT_SERVER
+ routine	mach_ports_register(
+ 		target_task	: task_t;
+ 		init_port_set	: mach_port_array_t =
+@@ -148,7 +152,7 @@
+ /*
+  *	Retrieve the stashed ports for the target task.
+  */
+-#if LIBSYSCALL_INTERFACE
++#if LIBSYSCALL_INTERFACE || KERNEL_SERVER || KOBJECT_SERVER
+ routine	mach_ports_lookup(
+ 		target_task	: task_t;
+ 	out	init_port_set	: mach_port_array_t =

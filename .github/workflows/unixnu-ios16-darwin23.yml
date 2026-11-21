@@ -52,6 +52,12 @@ jobs:
           set -euo pipefail
           mkdir -p diagnostics
           python3 device/ios16/build-darwin23.py configure --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/configure.log
+      - name: Check legacy Mach inherited ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 device/ios16/check-mach-inherited-ports.py "$BUILD_DIR/droidvm/tree/refer/xnu" \
+            2>&1 | tee diagnostics/mach-inherited-ports.log
       - name: Fingerprint reusable kernel and Data seed
         id: fingerprint
         env:
@@ -65,7 +71,7 @@ jobs:
             printf '%s\n' "$CHECKPOINT_IDENTITY" | age-keygen -y
             git -C device ls-tree -r HEAD -- board.toml configs package scripts socs feeds.toml ci/package-checkpoint.py \
               ios16/build-darwin23.py ios16/profile.toml ios16/volume-identity.toml \
-              ios16/prepare-volumes.py ios16/prepare-root-policies.py
+              ios16/prepare-volumes.py ios16/prepare-root-policies.py ios16/patches
             xcodebuild -version
             xcrun --sdk iphoneos --show-sdk-build-version
             brew list --versions llvm lld cmake ninja unifdef mtools dtc openssl@3

@@ -36,6 +36,7 @@ PINS = tomllib.loads((IOS / 'volume-identity.toml').read_text())
 PROFILE = tomllib.loads((IOS / 'profile.toml').read_text())
 IPHONE_OS, IPHONE_SYSTEM, IPHONE_APP = '087-86698-044.dmg', '087-86593-047.dmg', '087-86715-047.dmg'
 SEED = 'data-2g-skip-app.dbr'
+PORT_PATCH = IOS / 'patches/legacy-mach-inherited-ports.patch'
 
 
 def replace_field(text, field, value):
@@ -101,6 +102,15 @@ def verify_kernel_volume_ids(image):
             raise ValueError(f'The linked kernel must select the iPhone {volume} APFS volume {selected}')
 
 
+def verify_kernel_mach_ports(image):
+    table = subprocess.check_output(['llvm-nm', '--defined-only', image], text=True)
+    names = {line.split()[-1] for line in table.splitlines() if line.strip()}
+    for call in ('mach_ports_register', 'mach_ports_lookup'):
+        if {f'_{call}', f'__X{call}'} - names or f'__X_kernelrpc_{call}3' in names:
+            raise ValueError(f'The linked task MIG server does not implement the iOS 16 {call} RPC')
+    base.log('Verified the linked iOS 16 Mach inherited-port MIG handlers')
+
+
 def stage_device(core, directory):
     shutil.copytree(DEVICE, directory, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('.git', '.cache', '__pycache__', 'build', 'unixnu.lock'))
@@ -115,6 +125,7 @@ def stage_device(core, directory):
     defconfig.write_text('\n'.join(lines) + '\n')
     patches = directory / 'patches/xnu'
     shutil.copytree(core / 'patches/xnu', patches, dirs_exist_ok=True)
+    shutil.copyfile(PORT_PATCH, patches / PORT_PATCH.name)
     old_uuids = [(IPAD_OS_UUID, PINS['os']['uuid']), (IPAD_SYSTEMOS_UUID, PINS['systemos']['uuid'])]
     for file in ('offline-owner-cache-carrier.patch', 'offline-owner-systemos-mount.patch'):
         target = patches / file
@@ -248,6 +259,7 @@ class HybridBuild(base.Build):
         if report['original_sha256'] != KERNEL_DONOR or base.sha256(image) != report['candidate_sha256']:
             raise ValueError('Kernel does not match its prelink record and the audited donor')
         verify_kernel_volume_ids(image)
+        verify_kernel_mach_ports(image)
 
     def step_payload(self):
         self.verify_kernel()
