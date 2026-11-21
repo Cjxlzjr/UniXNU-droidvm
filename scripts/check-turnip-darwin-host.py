@@ -91,8 +91,10 @@ if result.returncode or 'PASS' not in result.stdout:
 # The actual KMD must defer native handle/view/IOVA retirement, bound pressure waits,
 # and preserve ownership on failures. This exercises real transport code, not pixels.
 deferred = out / 'deferred_bo'
+ios16_inputs = os.environ.get('DROIDVM_IOS16_METAL_HOST_CHECKS') == '1'
+deferred_source = (ROOT / 'build/turnip-host-inputs/deferred_bo.cpp' if ios16_inputs else sim / 'deferred_bo.cpp')
 subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-                '-I', '/opt/homebrew/include', '-I', kit, sim / 'deferred_bo.cpp', '-o', deferred], check=True)
+                '-I', '/opt/homebrew/include', '-I', kit, deferred_source, '-o', deferred], check=True)
 deferred_env = dict(env, TU_DARWIN_RETIRE_TRACE='1')
 deferred_env.pop('HOSTSIM_FAIL_USER_UNMAP', None)
 for mode in ['normal', 'busy', 'fence-error', 'free-error', 'lease-error', 'view-error', 'map-cleanup-error', 'pressure']:
@@ -110,6 +112,8 @@ for mode in ['normal', 'busy', 'fence-error', 'free-error', 'lease-error', 'view
 subprocess.run([sys.executable, ROOT / 'scripts/check-turnip-pipeline-cache-host.py'], check=True)
 # Original UI recipes additionally cover graphics-library caches, strict driver
 # feedback and genuine UUID/empty-cache refusals. The software peer runs no shader.
+if ios16_inputs:
+    subprocess.run([sys.executable, ROOT / 'scripts/build-adreno-metal-bridge.py', '--target', 'host'], check=True)
 with tempfile.TemporaryDirectory(prefix='quartzcore-driver-cache-', dir=out) as temporary:
     subprocess.run([sys.executable, ROOT / 'scripts/check-quartzcore-turnip-cache-host.py',
                     '--output', Path(temporary) / 'control'], check=True, timeout=660)
