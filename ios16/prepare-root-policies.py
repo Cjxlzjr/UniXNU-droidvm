@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Create and verify the signed root policies for the checked iPhone X disks."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -9,7 +10,12 @@ import sys
 from tempfile import TemporaryDirectory
 import tomllib
 
-core, volumes, output = (Path(arg).resolve() for arg in sys.argv[1:])
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ('core', 'volumes', 'output'):
+    parser.add_argument(name, type=Path)
+parser.add_argument('--kernel-inputs', type=Path, help='Keep authenticated source-build inputs in this build directory')
+args = parser.parse_args()
+core, volumes, output = (p.resolve() for p in (args.core, args.volumes, args.output))
 verified_root = core / 'kits/VerifiedRoot'
 pins = tomllib.loads(Path(__file__).with_name('volume-identity.toml').read_text())
 inputs = json.loads((volumes / 'volumes.json').read_text())
@@ -57,7 +63,23 @@ with TemporaryDirectory(prefix='ios16-policies-') as folder:
             sys.exit('The two root policies must carry the same owner trust anchor')
         trusted = anchor
         reports[name] = record
-        manifests.append((policy / 'manifest.bin').read_bytes())
+        envelope = (policy / 'manifest.bin').read_bytes()
+        manifests.append(envelope)
+        if args.kernel_inputs:
+            inputs_dir = args.kernel_inputs / f'verified-root-{name}'
+            inputs_dir.mkdir(parents=True, exist_ok=True)
+            indices = [0, 1, record['blocks_verified'] // 2, record['blocks_verified'] - 1]
+            with raw.open('rb') as image:
+                samples = []
+                for index in indices:
+                    image.seek(index * 4096)
+                    samples.append(image.read(4096))
+            (inputs_dir / 'manifest.bin').write_bytes(envelope)
+            (inputs_dir / 'trusted-key.bin').write_bytes(anchor)
+            (inputs_dir / 'original-samples.bin').write_bytes(b''.join(block.ljust(4096, b'\0') for block in samples))
+            (inputs_dir / 'verification.json').write_text(json.dumps({
+                **record, 'actual_sample_indices': indices, 'actual_sample_lengths': list(map(len, samples)),
+            }, indent=2) + '\n')
 
     cursor = 32 + 16 * len(manifests)
     windows = bytearray()

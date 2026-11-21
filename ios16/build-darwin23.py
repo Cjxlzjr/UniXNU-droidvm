@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Build a separate DroidVM boot disk for 20H392 with the working 21H461 backend."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import shutil
+import struct
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+import tomllib
+from types import SimpleNamespace
+import uuid
+
+DEVICE = Path(__file__).resolve().parents[1]
+IOS = DEVICE / 'ios16'
+spec = importlib.util.spec_from_file_location('droidvm_build', DEVICE / 'scripts/build-droidvm-all.py')
+base = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(base)
+CORE_REVISION = 'dba62c1ca53cd04c25b0e501afff31d5ffe2e20e'
+KERNEL_DONOR = 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7'
+TRUST_SHA256 = '2d97b2a4e114c7303f5521814b8ae67bb85c66e4628fefbb13fe38a3fdba555d'
+EFI_PINS = {
+    'UniXNU.efi': 'f63ae4b9d968288cfe44df40c4282221dbefe13fb5a86dcb55544cee6d55efe4',
+    'DarwinBoot.efi': 'c25cdb24f0f3c1568308325764bbc10e64e12d3b4566473ae03ca442a4cb9958',
+}
+TRUST_COMPONENTS = ('StaticTrustCache', 'Cryptex1,SystemTrustCache', 'Cryptex1,AppTrustCache')
+PINS = tomllib.loads((IOS / 'volume-identity.toml').read_text())
+PROFILE = tomllib.loads((IOS / 'profile.toml').read_text())
+IPHONE_OS, IPHONE_SYSTEM, IPHONE_APP = '087-86698-044.dmg', '087-86593-047.dmg', '087-86715-047.dmg'
+SEED = 'data-2g-skip-app.dbr'
+
+
+def replace_field(text, field, value):
+    text, count = re.subn(rf'^{re.escape(field)}\s*=.*$', lambda _: f'{field} = {value}', text, flags=re.M)
+    if count != 1:
+        raise ValueError(f'Expected one device field named {field}')
+    return text
+
+
+def replace_list(text, field, values):
+    text, count = re.subn(rf'^{re.escape(field)} = \[\r?\n.*?^\]',
+                          lambda _: f'{field} = {json.dumps(values)}', text, flags=re.M | re.S)
+    if count != 1:
+        raise ValueError(f'Expected one multiline device list named {field}')
+    return text
+
+
+def derived_board(text):
+    original = tomllib.loads(text)
+    if original['ipsw']['build'] != '21H461' or original['kernel']['prelink']['kernelcache_sha256'] != KERNEL_DONOR:
+        raise ValueError('The hybrid target requires the tested Darwin 23 backend')
+    args = original['payload']['kernel_args'] + [
+        'serial=3', 'owner-tools-overlay=0', 'owner-service-manager=0', 'owner-skip-launch-constraints=0',
+        'vgpu-3d=0', 'droidvm-gpu-metal=0', 'sheng-gpu-addon=0',
+    ]
+    tool_args = original['payload']['adt']['tool_args'] + ['--identity-tree', 'build/iphone-x-identity.im4p']
+    for key, value in (
+        ('fetch', '["KernelCache"]'),
+        ('volume', '"IOS16D23"'),
+        ('title', '"DroidVM: iPhone X iOS 16.7.16"'),
+        ('size_mib', '256'),
+        ('root_match_volume_uuid', json.dumps(PINS['os']['uuid'])),
+        ('ipad_identity', 'false'),
+        ('tool_args', json.dumps(tool_args)),
+    ):
+        text = replace_field(text, key, value)
+    # The [ipsw] chip_id is the kernel donor. Only the ADT chip_id is from D22AP.
+    head, adt = text.split('[payload.adt]', 1)
+    text = head + '[payload.adt]' + replace_field(adt, 'chip_id', '"8015"')
+    text = replace_list(text, 'trust_cache_sha256', [TRUST_SHA256])
+    text = replace_list(text, 'kernel_args', args)
+    parsed = tomllib.loads(text)
+    if parsed['kernel'] != original['kernel'] or parsed['ipsw']['chip_id'] != original['ipsw']['chip_id']:
+        raise ValueError('The hybrid board changed the donor kernel selection')
+    return text
+
+
+def substitute(source, replacements):
+    text = source.read_text()
+    for old, new in replacements:
+        if old not in text:
+            raise ValueError(f'{source}: expected pinned source value {old}')
+        text = text.replace(old, new)
+    return text
+
+
+def stage_device(core, directory):
+    shutil.copytree(DEVICE, directory, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns('.git', '.cache', '__pycache__', 'build', 'unixnu.lock'))
+    (directory / 'board.toml').write_text(derived_board((DEVICE / 'board.toml').read_text()))
+    patches = directory / 'patches/xnu'
+    shutil.copytree(core / 'patches/xnu', patches, dirs_exist_ok=True)
+    old_uuids = [('04769D26-2CA0-4825-B443-E2E5F88300F2', PINS['os']['uuid']),
+                 ('8846FE78-2910-4297-AF97-D59BB6F8FC16', PINS['systemos']['uuid'])]
+    for file in ('offline-owner-cache-carrier.patch', 'offline-owner-systemos-mount.patch'):
+        target = patches / file
+        target.write_text(substitute(target, old_uuids))
+    probe = substitute(core / 'scripts/build-verified-root-probe.py', [
+        (base.SYSTEMOS_DMG, IPHONE_SYSTEM),
+        (base.OS_IMAGE_SHA256, PINS['os']['sha256']),
+        ('b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f', PINS['systemos']['sha256']),
+        ('1483785', str((PINS['os']['bytes'] + 4095) // 4096)),
+        ('806400', str((PINS['systemos']['bytes'] + 4095) // 4096)),
+        ('3303014400', str(PINS['systemos']['bytes'])),
+    ])
+    (directory / 'scripts/build-verified-root-probe.py').write_text(probe)
+
+
+class HybridBuild(base.Build):
+    def __init__(self, args):
+        core, out = args.unixnu.resolve(), args.output.resolve()
+        if subprocess.check_output(['git', '-C', core, 'rev-parse', 'HEAD'], text=True).strip() != CORE_REVISION:
+            raise ValueError(f'Expected the audited UniXNU revision {CORE_REVISION}')
+        if out.is_relative_to(DEVICE):
+            raise ValueError('Place the derived build tree outside the source repository')
+        device = out / 'device'
+        stage_device(core, device)
+        scratch = Path('/tmp') / ('droidvm-ios16-' + hashlib.sha256(str(out).encode()).hexdigest()[:12])
+        super().__init__(args, device=device, out=out, scratch=scratch)
+        self.reference_out = out / 'reference'
+        self.raw = self.work / 'iphone-volumes'
+        self.input_cache = self.raw / '.inputs'
+        self.ipsw = self.input_cache / 'ipsw/20H392'
+        self.os_dmg, self.systemos_dmg = IPHONE_OS, IPHONE_SYSTEM
+        self.trust = self.tree / 'build/original-static-system-trust/original-static-system.bundle'
+
+    def run_step(self, name, action):
+        stamp = self.stamp(name)
+        if not stamp.is_file():
+            base.log(f'Hybrid step {name}')
+            action()
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text('done\n')
+
+    def configure(self):
+        self.configure_sources()
+        self.unixnu_cmd('tree', logfile=self.logs / 'tree.log')
+        if (self.tree / 'patches/xnu').resolve() != (self.device / 'patches/xnu').resolve():
+            raise ValueError('The resolved tree did not select the hybrid UUID patches')
+        for name, pin in EFI_PINS.items():
+            source = self.args.efi_dir / name
+            if base.sha256(source) != pin:
+                raise ValueError(f'Unexpected legacy SMP loader {name}')
+            self.efi_dir().mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, self.efi_dir() / name)
+        self.stamp('package').parent.mkdir(parents=True, exist_ok=True)
+        self.stamp('package').write_text('verified loader reuse\n')
+
+    def small_iphone_members(self):
+        sys.path.insert(0, str(self.unixnu / 'scripts'))
+        from unixnu.ipsw import Ipsw, im4p_payload
+        source = Ipsw(SimpleNamespace(board=PROFILE, out_root=self.input_cache), PROFILE['ipsw']['url'])
+        blobs = {}
+        for name in ('DeviceTree', *TRUST_COMPONENTS, 'Cryptex1,AppOS'):
+            path = source.extract(name)
+            data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != PROFILE['ipsw']['sha256'][path.name]:
+                raise ValueError(f'{name} differs from the pinned 20H392 member')
+            blobs[name] = data
+        identity = self.tree / 'build/iphone-x-identity.im4p'
+        identity.write_bytes(blobs['DeviceTree'])
+        modules = [im4p_payload(blobs[name]) for name in TRUST_COMPONENTS]
+        offsets = [4 * (len(modules) + 1)]
+        for module in modules[:-1]:
+            offsets.append(offsets[-1] + len(module))
+        bundle = struct.pack('<4I', len(modules), *offsets) + b''.join(modules)
+        if hashlib.sha256(bundle).hexdigest() != TRUST_SHA256:
+            raise ValueError('The original static, SystemOS and AppOS trust module bundle differs')
+        self.trust.parent.mkdir(parents=True, exist_ok=True)
+        self.trust.write_bytes(bundle)
+        app = self.tree / 'build/original-trust-extra/app.trustcache'
+        app.parent.mkdir(parents=True, exist_ok=True)
+        app.write_bytes(blobs['Cryptex1,AppTrustCache'])
+
+    def step_volumes(self):
+        base.run([sys.executable, IOS / 'prepare-volumes.py', self.unixnu, self.raw],
+                 env=self.env, logfile=self.logs / 'iphone-volumes.log')
+        self.os_attachment()
+        link = self.volumes / IPHONE_SYSTEM
+        if not link.exists():
+            link.symlink_to(self.raw / 'systemos.img')
+
+    def step_policies(self):
+        base.run([sys.executable, IOS / 'prepare-root-policies.py', self.unixnu, self.raw, self.work / 'policies',
+                  '--kernel-inputs', self.tree / 'build'], env=self.env, logfile=self.logs / 'iphone-policies.log')
+
+    def step_data_base(self):
+        self.os_attachment()
+        self.data.mkdir(parents=True, exist_ok=True)
+        fixture = self.tree / 'build/owner-data-fixture'
+        if not fixture.exists():
+            launchd = base.sha256(self.volumes / 'os-mount/sbin/launchd')
+            with TemporaryDirectory(dir=fixture.parent) as folder:
+                prepared = Path(folder) / 'fixture'
+                self.seed_script('prepare-owner-data-fixture.py', '--launchd-sha256', launchd, '--output', prepared)
+                prepared.replace(fixture)
+        source = fixture / 'owner-data-32.cdr'
+        seed = json.loads((fixture / 'seed.json').read_text())
+        if base.sha256(source) != seed['sha256']:
+            raise ValueError('The copied APFS Data seed differs from its build report')
+        self.pack(source, self.data / 'data-32.dbr')
+        self.seed_chain(self.data / 'data-32.dbr', [
+            ('data-2g.dbr', ['seed-data-grow.py', '--volatile', '--gib', '2']),
+            ('data-2g-skip.dbr', ['seed-data-skip-setup.py']),
+            (SEED, ['add-app-cryptex-data.py', '{base}', str(self.ipsw / IPHONE_APP), '{out}']),
+        ])
+        self.apply_data_uuid()
+
+    def run_kernel(self):
+        self.unixnu_cmd('ipsw', 'fetch', 'KernelCache', logfile=self.logs / 'kernel-donor.log')
+        self.small_iphone_members()
+        for step, method in [('volumes', self.step_volumes), ('policies', self.step_policies),
+                             ('data-base', self.step_data_base), ('reference', self.step_reference),
+                             ('kernel', self.step_kernel)]:
+            self.run_step(step, method)
+        self.verify_kernel()
+
+    def verify_kernel(self):
+        image = self.work / 'kernel/kernel.macho'
+        with image.open('rb') as stream:
+            if struct.unpack('<4I', stream.read(16)) != (0xfeedfacf, 0x100000c, 0, 2):
+                raise ValueError('Expected the linked ARM64 kernel')
+        report = json.loads(image.with_suffix('.json').read_text())
+        if report['original_sha256'] != KERNEL_DONOR or base.sha256(image) != report['candidate_sha256']:
+            raise ValueError('Kernel does not match its prelink record and the audited donor')
+
+    def step_payload(self):
+        self.verify_kernel()
+        if not (self.tree / 'build/iphone-x-identity.im4p').is_file():
+            self.small_iphone_members()
+        seed = json.loads((self.tree / 'build/owner-data-fixture/seed.json').read_text())
+        uuid_value = str(uuid.UUID(seed['volume_uuid'])).upper()
+        if f'CONFIG_XNU_OWNER_DATA_VOLUME_UUID="{uuid_value}"' not in (self.work / '.config').read_text().splitlines():
+            raise ValueError('The Data seed and linked kernel UUID must match')
+        identity = hashlib.blake2b(uuid.UUID(uuid_value).bytes, digest_size=8, person=b'droidvm-ios16').hexdigest()
+        self.unixnu_cmd('build', 'payload', '--trust-cache', self.trust, '--data-ramdisk', self.data / SEED,
+                        '--unique-chip-id', identity, logfile=self.logs / 'payload.log')
+        self.release.mkdir(parents=True, exist_ok=True)
+        disk = self.release / 'ios16-darwin23.img'
+        base.run(['bash', DEVICE / 'scripts/make-droidvm-disk.sh', self.work / 'payload/payload.img',
+                  self.efi_dir(), disk], env=self.env, logfile=self.logs / 'disk.log')
+        members = self.verify_disk(disk)
+        report = {
+            'target': 'iPhone10,3 / iOS 16.7.16 (20H392)',
+            'kernel_backend': 'Darwin 23 / 21H461',
+            'kernel_donor_sha256': KERNEL_DONOR,
+            'data_volume_uuid': uuid_value,
+            'boot_disk': {'bytes': disk.stat().st_size, 'sha256': base.sha256(disk)},
+            'volumes': PINS, 'fat': members, 'device_verified': False,
+        }
+        (self.release / 'release.json').write_text(json.dumps(report, indent=2) + '\n')
+        print(json.dumps(report, indent=2))
+
+    def verify_disk(self, disk):
+        paths = {'BOOTAA64.EFI': 'EFI/BOOT/BOOTAA64.EFI', 'unixnu.toml': 'EFI/UniXNU/unixnu.toml'}
+        paths.update({name: f'EFI/UniXNU/Payloads/{name}' for name in
+                      ('DarwinBoot.efi', 'kernel.macho', 'kernel.macho.adt', 'kernel.macho.trustcache', 'scratch-data.img')})
+        with TemporaryDirectory(dir=self.work) as folder:
+            stage = Path(folder)
+            base.run(['mcopy', '-i', disk, *(f'::/{location}' for location in paths.values()), stage],
+                     env={**self.env, 'MTOOLS_SKIP_CHECK': '1'})
+            for name, expected in {
+                'BOOTAA64.EFI': EFI_PINS['UniXNU.efi'], 'DarwinBoot.efi': EFI_PINS['DarwinBoot.efi'],
+                'kernel.macho': base.sha256(self.work / 'kernel/kernel.macho'),
+                'kernel.macho.trustcache': TRUST_SHA256, 'scratch-data.img': base.sha256(self.data / SEED),
+            }.items():
+                if base.sha256(stage / name) != expected:
+                    raise ValueError(f'FAT member {name} differs from its verified source')
+            record = json.loads((self.work / 'payload/payload.json').read_text())
+            adt = stage / 'kernel.macho.adt'
+            if base.sha256(adt) != record['adt_sha256']:
+                raise ValueError('The final FAT device tree differs from the prepared tree')
+            decode = runpy.run_path(str(DEVICE / 'scripts/make-droidvm-adt.py'))['read_adt']
+            payload = adt.read_bytes()
+            (tree, children), consumed = decode(payload)
+            chosen, _ = next((props, kids) for props, kids in children if props['name'] == b'chosen\0')
+            if (consumed != len(payload) or tree['model'] != b'iPhone10,3\0'
+                    or PINS['os']['uuid'].encode() not in chosen.get('root-matching', b'')):
+                raise ValueError('The finished device tree must select the D22AP root and the verified iPhone OS volume')
+            config = tomllib.loads((stage / 'unixnu.toml').read_text())
+            boot = next(entry for entry in config['entry'] if entry['id'] == config['boot']['default'])
+            if config['driver'] != [{'path': 'Payloads/DarwinBoot.efi'}] or boot['path'] != 'Payloads/kernel.macho':
+                raise ValueError('The finished FAT does not boot through the checked EFI and kernel')
+            return {name: {'bytes': (stage / name).stat().st_size, 'sha256': base.sha256(stage / name)} for name in paths}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('stage', choices=('configure', 'kernel', 'payload'))
+    parser.add_argument('--unixnu', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--efi-dir', type=Path, required=True)
+    args = parser.parse_args()
+    build = HybridBuild(args)
+    build.run_step('setup', build.configure)
+    if args.stage == 'kernel':
+        build.run_kernel()
+    elif args.stage == 'payload':
+        build.step_payload()
+
+
+if __name__ == '__main__':
+    main()

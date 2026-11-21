@@ -101,11 +101,12 @@ def clone(source, destination):
 
 
 class Build:
-    def __init__(self, args):
+    def __init__(self, args, *, device=DEVICE, out=None, scratch=None):
         self.args = args
         self.unixnu = args.unixnu.resolve()
-        self.board = tomllib.loads((DEVICE / 'board.toml').read_text())
-        self.out = Path(os.environ.get('UNIXNU_OUT', self.unixnu / 'out')).resolve()
+        self.device = device
+        self.board = tomllib.loads((device / 'board.toml').read_text())
+        self.out = Path(out or os.environ.get('UNIXNU_OUT', self.unixnu / 'out')).resolve()
         self.work = self.out / self.board['board']['name']
         self.tree = self.work / 'tree'
         self.stamps = self.work / 'build-all'
@@ -114,7 +115,10 @@ class Build:
         self.ipsw = self.out / 'ipsw' / self.board['ipsw']['build']
         self.volumes = self.tree / '.cache/firmware/target-volumes'
         self.data = self.tree / 'build/droidvm-data'
-        self.scratch = Path('/tmp') / f'droidvm-build-{os.environ.get("USER", "build")}'
+        self.scratch = scratch or Path('/tmp') / f'droidvm-build-{os.environ.get("USER", "build")}'
+        self.reference_out = self.unixnu / 'out-reference'
+        self.os_dmg = OS_DMG
+        self.systemos_dmg = SYSTEMOS_DMG
         self.env = dict(os.environ, PATH=os.pathsep.join([str(Path.home() / '.cargo/bin'), '/opt/homebrew/bin',
                                                           os.environ.get('PATH', '')]))
 
@@ -135,7 +139,7 @@ class Build:
 
     # setup ---------------------------------------------------------------------------------------------------------------
     def configure_sources(self):
-        self.unixnu_cmd('defconfig', self.board['kernel']['defconfig'], '-D', DEVICE)
+        self.unixnu_cmd('defconfig', self.board['kernel']['defconfig'], '-D', self.device)
         self.sync_sources()
 
     def step_setup(self):
@@ -156,10 +160,10 @@ class Build:
     # target-volumes/<dmg> and target-volumes/os-mount point to), and the Data seed scripts' working images (seed_script).
     def os_attachment(self):
         """The whole-disk device of the OS image's read-only attachment, attaching it at os-mount when it is not."""
-        source, image, mount = self.ipsw / OS_DMG, self.scratch / OS_DMG, self.scratch / 'os-mount'
+        source, image, mount = self.ipsw / self.os_dmg, self.scratch / self.os_dmg, self.scratch / 'os-mount'
         # The runner's checkout and /tmp share an APFS volume. Clone there to avoid allocating the OS DMG twice.
         clone(source, image)
-        for name, target in ((OS_DMG, image), ('os-mount', mount)):
+        for name, target in ((self.os_dmg, image), ('os-mount', mount)):
             link = self.volumes / name
             if not link.is_symlink() or link.resolve() != target.resolve():
                 if link.is_dir() and not link.is_symlink():
@@ -180,7 +184,7 @@ class Build:
         return next(e['dev-entry'] for e in attached['system-entities'] if e.get('content-hint') == 'GUID_partition_scheme')
 
     def step_volumes(self):
-        clone(self.ipsw / SYSTEMOS_DMG, self.volumes / SYSTEMOS_DMG)
+        clone(self.ipsw / self.systemos_dmg, self.volumes / self.systemos_dmg)
         log(f'OS image attached: {self.os_attachment()}')
 
     # policies ------------------------------------------------------------------------------------------------------------
@@ -293,11 +297,11 @@ class Build:
 
     # reference -----------------------------------------------------------------------------------------------------------
     def step_reference(self):
-        out = self.unixnu / 'out-reference'
+        out = self.reference_out
         device = out / 'device'
         if device.exists():
             shutil.rmtree(device)
-        shutil.copytree(DEVICE, device, ignore=shutil.ignore_patterns('.git', '__pycache__', 'build', '.cache'))
+        shutil.copytree(self.device, device, ignore=shutil.ignore_patterns('.git', '__pycache__', 'build', '.cache'))
         board = (device / 'board.toml').read_text()
         archives = '\n'.join(f'  "{entry}",' for entry in REFERENCE_ARCHIVES)
         board, count = re.subn(r'^archives = \[\n.*?^\]', 'archives = [\n' + archives + '\n]', board, flags=re.M | re.S)

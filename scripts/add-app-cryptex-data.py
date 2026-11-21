@@ -7,7 +7,7 @@ through /System/Cryptexes/App. Here it is owner Data: its files go to /private/v
 points Cryptexes/OS/{System,usr} for the SystemOS volume's own directories, and the kernel shows that directory over the empty /private/preboot
 with owner-app-cryptex=1 (package/DroidVMLaunchPolicy.c). The binaries keep Apple's signatures and pass AMFI through the cryptex's own
 trust module, which the owner trust bundle carries unchanged (make-owner-trust-bundle.py; ipados27/scripts/build-droidvm-trust.py
-for iPadOS 27). Only the pinned cryptexes are accepted: 21H461's and 24A446's.
+for iPadOS 27). Only the pinned cryptexes are accepted.
 BASE is not modified and the volume UUID is unchanged. Run where hdiutil may attach images (not on an external volume over ssh)."""
 import hashlib
 import json
@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / 'drivers/DarwinBoot/Test'))
 import packed_ramdisk
 
 APP_CRYPTEX_SHA256 = {'21H461': '52e568e1eaaede5fde4684ad10afc60f8fb236bfb5a23e0869bb0ed8a1d275d7',   # 044-75188-038.dmg
+                      '20H392': '391f2df322c3172b021b2874f6da5c3e78b70b3df8f502e1a4af2b1d715c4608',   # 087-86715-047.dmg
                       '24A446': '37f1a44e69120d0a1bab947bb4d69714e2e0dcfb9a8d75c13b71df336463a408'}   # 043-69297-793.dmg
 
 

@@ -61,6 +61,23 @@ hold the verified files through launch and enforce one-time state there. The
 original Darwin 22 AppleImage4 bootstrap has no verified handoff for this
 envelope yet. Run `python3 ios16/test-boot-policy.py -v` for the host tests.
 
+## iOS 16 userland on Darwin 23
+
+The **UniXNU DroidVM iOS 16 on Darwin 23** workflow builds a separate iPhone X
+boot disk. It uses the 21H461 kernel and driver ABI that already boots in
+DroidVM and the original 20H392 OS, SystemOS, AppOS and trust modules. The
+signed VirtIO policies match the raw OS and SystemOS from the original volume
+workflow. A fresh APFS Data seed comes from the iPhone OS and carries a UUID
+bound to the new kernel.
+
+The workflow reuses the proven legacy SMP EFI artifact. A matching encrypted
+checkpoint keeps the linked kernel together with its Data seed. The output
+contains only `ios16-darwin23.img` and its verification report. Deployment
+uses the existing 20H392 OS and SystemOS disks and a separate Data store.
+The first boot uses the guest's software display path without owner tools
+or a Metal plugin. Check the actual root mount, Data mount and SpringBoard on
+the DroidVM device.
+
 ## DroidVM kernel handoff check
 
 Generate a separate probe configuration with `make-probe-config.py`, giving it

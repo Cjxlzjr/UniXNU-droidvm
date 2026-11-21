@@ -1,0 +1,138 @@
+name: UniXNU DroidVM iOS 16 on Darwin 23
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: unixnu-ios16-darwin23-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CORE_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
+  EXPORT_RECIPIENT: age16wv2hcp4sktjexht8je05qwneyq2ddsxwt4nzhy90tz4h7zs0d3sftv9gs
+  BUILD_DIR: UniXNU/out-ios16-darwin23
+  EFI_DIR: ios16-efi
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 140
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare toolchain and UniXNU
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
+          git -C UniXNU checkout --detach "$CORE_REVISION"
+          git -C UniXNU submodule update --init --recursive --filter=blob:none
+          df -h / /private/tmp
+      - name: Reuse the verified legacy SMP EFI
+        uses: actions/download-artifact@v4
+        with:
+          name: ios16-efi
+          run-id: 44771150733
+          github-token: ${{ github.token }}
+          path: ios16-efi
+      - name: Assemble the isolated device target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          python3 device/ios16/build-darwin23.py configure --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" +            2>&1 | tee diagnostics/configure.log
+      - name: Fingerprint reusable kernel and Data seed
+        id: fingerprint
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CHECKPOINT_IDENTITY" || exit 0
+          fingerprint=$({
+            printf '%s\n' "$CORE_REVISION" "$RUNNER_ARCH"
+            printf '%s\n' "$CHECKPOINT_IDENTITY" | age-keygen -y
+            git -C device ls-tree -r HEAD -- board.toml configs package scripts socs feeds.toml ci/package-checkpoint.py \
+              ios16/build-darwin23.py ios16/profile.toml ios16/volume-identity.toml \
+              ios16/prepare-volumes.py ios16/prepare-root-policies.py
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-build-version
+            brew list --versions llvm lld cmake ninja unifdef mtools dtc openssl@3
+          } | shasum -a 256 | cut -d ' ' -f 1)
+          echo "key=unixnu-ios16-darwin23-$fingerprint" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        if: steps.fingerprint.outputs.key != ''
+        id: checkpoint
+        with:
+          key: ${{ steps.fingerprint.outputs.key }}
+          path: ${{ runner.temp }}/ios16-darwin23-package.tar.gz.age
+      - name: Restore or build the signed root, Data seed and kernel
+        id: kernel
+        env:
+          CHECKPOINT_IDENTITY: ${{ secrets.UNIXNU_CHECKPOINT_IDENTITY }}
+          CACHE_HIT: ${{ steps.checkpoint.outputs.cache-hit }}
+          CHECKPOINT_KEY: ${{ steps.fingerprint.outputs.key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ "$CACHE_HIT" == true ]]; then
+            archive="$RUNNER_TEMP/ios16-darwin23-restore.tar.gz"
+            trap 'rm -f "$archive"' EXIT
+            if age --decrypt --identity <(printf '%s\n' "$CHECKPOINT_IDENTITY") \
+                -o "$archive" "$RUNNER_TEMP/ios16-darwin23-package.tar.gz.age" && \
+                python3 device/ci/package-checkpoint.py restore "$BUILD_DIR/droidvm" "$CHECKPOINT_KEY" --archive "$archive"; then
+              echo 'Restored the verified kernel and its matching iPhone Data seed.'
+              exit 0
+            fi
+            echo '::warning::Checkpoint verification failed. Building the kernel.'
+          fi
+          python3 device/ios16/build-darwin23.py kernel --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" \
+            2>&1 | tee diagnostics/kernel.log
+          if [[ -n "$CHECKPOINT_KEY" && "$CACHE_HIT" != true ]]; then
+            recipient=$(printf '%s\n' "$CHECKPOINT_IDENTITY" | age-keygen -y)
+            python3 device/ci/package-checkpoint.py save "$BUILD_DIR/droidvm" "$CHECKPOINT_KEY" | \
+              age --encrypt --recipient "$recipient" -o "$RUNNER_TEMP/ios16-darwin23-package.tar.gz.age"
+            echo 'save=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache/save@v4
+        if: steps.kernel.outputs.save == 'true'
+        with:
+          key: ${{ steps.fingerprint.outputs.key }}
+          path: ${{ runner.temp }}/ios16-darwin23-package.tar.gz.age
+      - name: Build and read back the iPhone boot disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 device/ios16/build-darwin23.py payload --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" \
+            2>&1 | tee diagnostics/payload.log
+          cp "$BUILD_DIR/droidvm/release/release.json" diagnostics/
+          tar -czf - -C "$BUILD_DIR/droidvm/release" ios16-darwin23.img release.json | \
+            age --encrypt --recipient "$EXPORT_RECIPIENT" -o "$RUNNER_TEMP/ios16-darwin23.tar.gz.age"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-darwin23-encrypted
+          path: ${{ runner.temp }}/ios16-darwin23.tar.gz.age
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-darwin23-logs
+          path: |
+            diagnostics/
+            UniXNU/out-ios16-darwin23/droidvm/build-all/logs/
+            UniXNU/out-ios16-darwin23/droidvm/logs/
+            UniXNU/out-ios16-darwin23/reference/droidvm/logs/
+          if-no-files-found: ignore
