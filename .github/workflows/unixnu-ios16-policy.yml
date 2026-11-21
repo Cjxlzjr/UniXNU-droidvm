@@ -1,0 +1,23 @@
+name: UniXNU DroidVM iOS 16 offline launch policy
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios16/boot-policy.py'
+      - 'ios16/test-boot-policy.py'
+      - '.github/workflows/unixnu-ios16-policy.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify signatures and launch challenge handling
+        run: python ios16/test-boot-policy.py -v

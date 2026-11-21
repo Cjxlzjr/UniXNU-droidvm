@@ -41,6 +41,26 @@ lockdown. AppleImage4 policy initialization happens earlier in the kernel;
 its runtime boot metadata is a separate input. Mounting the root volumes and
 reaching the iPhone UI also require Darwin 22 storage and display integration.
 
+## Offline probe authorization
+
+`boot-policy.py` tests an owner-authorized launch independently of AppleImage4.
+Use Python 3.11+ and OpenSSL 3+ with an Ed25519 owner key. A trusted launcher
+would own the local state directory and enroll the public-key fingerprint
+reported by `key-id --public-key FILE`. The `issue` command creates a new state
+directory for the selected VM UUID and enrolled fingerprint. The challenge
+expires after ten minutes.
+
+`sign` binds the challenge and target to the actual read-only probe disk,
+UEFI firmware and VM configuration. `verify` checks the enrolled key, signature
+and measured inputs, then atomically redeems the challenge. Use `--help` on
+each subcommand for its file arguments. Treat the challenge directory as trusted
+verifier state and keep the signing key private.
+
+The current use is offline measurement. A launcher integration would need to
+hold the verified files through launch and enforce one-time state there. The
+original Darwin 22 AppleImage4 bootstrap has no verified handoff for this
+envelope yet. Run `python3 ios16/test-boot-policy.py -v` for the host tests.
+
 ## DroidVM kernel handoff check
 
 Generate a separate probe configuration with `make-probe-config.py`, giving it
