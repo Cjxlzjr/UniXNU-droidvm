@@ -42,10 +42,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py
+          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py device/scripts/hostsim_watchdog_patch.py
           python3 device/ios16/metal-experiment.py selftest
           python3 device/ios16/metal-trust.py --selftest
           python3 device/ios16/host_check_integration.py
+          python3 device/scripts/hostsim_watchdog_patch.py --selftest
           test "$GPU_STAGE" = metal -o "$GPU_STAGE" = 3d
       - name: Install pinned build toolchain
         shell: bash

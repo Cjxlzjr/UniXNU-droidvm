@@ -68,7 +68,13 @@ for name in ['NativeAdrenoMemory', 'NativeAdrenoSmmuMemory', 'NativeAdrenoVm', '
                     '-I', ROOT / 'kits/AdrenoPM4', '-c', kit / (name + '.cpp'), '-o', obj], check=True)
     core.append(obj)
 shim_obj = out / 'host_iokit_shim.o'
-subprocess.run(['xcrun', 'clang++', '-std=c++17', '-O1', '-fPIC', '-c', sim / 'host_iokit_shim.cpp', '-o', shim_obj], check=True)
+# Make both IOKit transport routes test the same watchdog timeout.
+# This is a generated host-only shim; all production sources remain pinned.
+subprocess.run([sys.executable, ROOT / 'scripts/hostsim_watchdog_patch.py',
+                '--input', sim / 'host_iokit_shim.cpp',
+                '--output', out / 'host_iokit_shim.watchdog.cpp'], check=True)
+subprocess.run(['xcrun', 'clang++', '-std=c++17', '-O1', '-fPIC',
+                '-c', out / 'host_iokit_shim.watchdog.cpp', '-o', shim_obj], check=True)
 shim = out / 'libhostiokit.dylib'
 subprocess.run(['xcrun', 'clang++', '-dynamiclib', '-o', shim, service, shim_obj, *core, *objects,
                 '-framework', 'IOKit', '-framework', 'CoreFoundation'], check=True)
@@ -151,8 +157,10 @@ if plugin.returncode:
     sys.exit('The plugin Turnip sequence did not behave as expected on the host (exit %d); see %s' % (plugin.returncode, out / 'plugin_smoke.log'))
 # Watchdog: block the first BoAlloc for 17 s; the 15 s sample must name the last marker (6004), show the worker waiting (not running) and
 # carry at least one return address inside the Turnip image ('v' frames).
-stalled = subprocess.run([str(plugin_smoke), str(library)], env=dict(env_plugin, HOSTSIM_STALL='17'), capture_output=True, text=True, timeout=300)
+stalled = subprocess.run([str(plugin_smoke), str(library)], env=dict(env_plugin, HOSTSIM_STALL='17', HOSTSIM_TRACE='1'), capture_output=True, text=True, timeout=300)
 (out / 'plugin_watchdog.log').write_text(stalled.stdout + stalled.stderr)
+if 'HOSTSIM_STALL_TRIGGERED' not in stalled.stderr:
+    sys.exit('Watchdog stall never reached a BO allocation via either IOKit transport; see ' + str(out / 'plugin_watchdog.log'))
 lines = [l for l in stalled.stdout.splitlines() if l.startswith('watchdog: W ')]
 print('\n'.join(lines))
 if stalled.returncode or len(lines) != 1 or not lines[0].startswith('watchdog: W 6004 ') or ' v' not in lines[0] or 'kern' in lines[0]:
