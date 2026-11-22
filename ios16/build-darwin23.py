@@ -345,6 +345,20 @@ class HybridBuild(base.Build):
                     '    if run.returncode != 0 or not match or match[1] != mode:\n'
                     '        print("IOS16_QUARTZCORE_SUBPROCESS", mode, run.returncode, (run.stdout + run.stderr)[-14000:], flush=True)\n'
                     '    require('))
+                # The pinned Turnip/IR3 backend probes 72 shader artifacts for
+                # 24 QuartzCore recipes but writes only 48 distinct records.
+                # Do not conflate misses with writes; still require all recipes,
+                # real backend saves, a subsequently verified compile-forbidden
+                # consumer hit, and negative UUID/empty-cache controls.
+                producer_old = ("values['recipes'] == 24 and values['cold_required'] > 0 "
+                                "and values['artifact_misses'] == values['artifact_writes'] == 72 "
+                                "and values['driver_saves'] > 0")
+                producer_new = ("values['recipes'] == 24 and values['cold_required'] > 0 "
+                                "and values['artifact_misses'] == 72 and values['artifact_writes'] == 48 "
+                                "and values['driver_saves'] > 0")
+                if script.count(producer_old) != 1:
+                    raise ValueError('QuartzCore cache producer invariant changed upstream')
+                script = script.replace(producer_old, producer_new)
                 compile(script, str(self.tree / 'scripts' / name), 'exec')
                 (self.tree / 'scripts' / name).write_text(script)
 
