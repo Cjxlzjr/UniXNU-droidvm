@@ -155,12 +155,16 @@ plugin = subprocess.run([str(plugin_smoke), str(library)], env=env_plugin, captu
 print(plugin.stdout, end='')
 if plugin.returncode:
     sys.exit('The plugin Turnip sequence did not behave as expected on the host (exit %d); see %s' % (plugin.returncode, out / 'plugin_smoke.log'))
-# Watchdog: block the first BoAlloc for 17 s; the 15 s sample must name the last marker (6004), show the worker waiting (not running) and
+# Watchdog: block the first BoAlloc for 20 s; the 15 s sample must name the last marker (6004), show the worker waiting (not running) and
 # carry at least one return address inside the Turnip image ('v' frames).
-stalled = subprocess.run([str(plugin_smoke), str(library)], env=dict(env_plugin, HOSTSIM_STALL='17', HOSTSIM_TRACE='1'), capture_output=True, text=True, timeout=300)
+stalled = subprocess.run([str(plugin_smoke), str(library)],
+                         env=dict(env_plugin, HOSTSIM_STALL='20', HOSTSIM_TRACE='1'),
+                         capture_output=True, text=True, timeout=300)
 (out / 'plugin_watchdog.log').write_text(stalled.stdout + stalled.stderr)
-if 'HOSTSIM_STALL_TRIGGERED' not in stalled.stderr:
+stall_events = [line for line in stalled.stderr.splitlines() if line.startswith('HOSTSIM_STALL_TRIGGERED')]
+if not stall_events:
     sys.exit('Watchdog stall never reached a BO allocation via either IOKit transport; see ' + str(out / 'plugin_watchdog.log'))
+print('\n'.join(stall_events), flush=True)
 lines = [l for l in stalled.stdout.splitlines() if l.startswith('watchdog: W ')]
 print('\n'.join(lines))
 if stalled.returncode or len(lines) != 1 or not lines[0].startswith('watchdog: W 6004 ') or ' v' not in lines[0] or 'kern' in lines[0]:

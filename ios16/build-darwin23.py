@@ -298,9 +298,14 @@ class HybridBuild(base.Build):
 
     def step_plugin(self):
         self.prepare_turnip_host_checks()
+        self.prepare_mesa()
+        watchdog = runpy.run_path(str(self.tree / 'scripts/hostsim_watchdog_patch.py'))
+        with watchdog['staged_watchdog_driver'](self.tree):
+            self.build_checked_plugin()
+
+    def build_checked_plugin(self):
         # Keep the host suites strict, but collect independent host and plugin
         # build results in the same CI attempt. Never stage an unverified plugin.
-        self.prepare_mesa()
         self.script('build-turnip-darwin.py', '--target', 'ios', logfile=self.logs / 'turnip-ios.log')
         self.script('build-turnip-darwin.py', '--target', 'host', logfile=self.logs / 'turnip-host.log')
         host_status = self.script('check-turnip-darwin-host.py',
