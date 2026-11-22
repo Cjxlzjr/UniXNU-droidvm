@@ -194,8 +194,7 @@ class HybridBuild(base.Build):
         self.configure_sources()
         self.unixnu_cmd('tree', logfile=self.logs / 'tree.log')
         if self.gpu_stage == 'metal':
-            base.run([sys.executable, IOS / 'metal-experiment.py', 'patch', self.tree],
-                     env=self.env, logfile=self.logs / 'ios16-metal-patch.log')
+            self.patch_metal_deployment('ios16-metal-configure-patch.log')
         if (self.tree / 'patches/xnu').resolve() != (self.device / 'patches/xnu').resolve():
             raise ValueError('The resolved tree did not select the hybrid UUID patches')
         for name, pin in EFI_PINS.items():
@@ -292,16 +291,30 @@ class HybridBuild(base.Build):
             self.run_step(step, method)
         self.verify_kernel()
         if self.gpu_stage == 'metal':
-            self.run_step('gpu-plugin', self.step_plugin)
-            self.run_step('gpu-seed', self.step_gpu_seed)
-            self.run_step('gpu-trust', self.step_gpu_trust)
+            # Older stamps can refer to an iOS 17 bundle and its seed/trust.
+            self.run_step('gpu-plugin-ios16', self.step_plugin)
+            self.run_step('gpu-seed-ios16', self.step_gpu_seed)
+            self.run_step('gpu-trust-ios16', self.step_gpu_trust)
+
+    def patch_metal_deployment(self, log):
+        base.run([sys.executable, IOS / 'metal-experiment.py', 'patch', self.tree],
+                 env=self.env, logfile=self.logs / log)
+
+    def verify_metal_deployment(self):
+        base.run([sys.executable, IOS / 'metal-experiment.py', 'audit',
+                  self.tree / 'build/adreno-metal-plugin'],
+                 env=self.env, logfile=self.logs / 'ios16-metal-artifacts.log')
 
     def step_plugin(self):
         self.prepare_turnip_host_checks()
         self.prepare_mesa()
+        # Kernel assembly can copy upstream scripts over the configure-time
+        # adaptations. Apply them after the final UnixNU tree operation.
+        self.patch_metal_deployment('ios16-metal-patch.log')
         watchdog = runpy.run_path(str(self.tree / 'scripts/hostsim_watchdog_patch.py'))
         with watchdog['staged_watchdog_driver'](self.tree):
             self.build_checked_plugin()
+        self.verify_metal_deployment()
 
     def build_checked_plugin(self):
         # Keep the host suites strict, but collect independent host and plugin
@@ -466,6 +479,7 @@ class HybridBuild(base.Build):
         self.verify_kernel()
         if self.gpu_stage == 'metal':
             self.verify_turnip_host_check()
+            self.verify_metal_deployment()
         if not (self.tree / 'build/iphone-x-identity.im4p').is_file():
             self.small_iphone_members()
         seed = json.loads((self.tree / 'build/owner-data-fixture/seed.json').read_text())

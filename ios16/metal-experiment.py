@@ -7,14 +7,17 @@ The Mach-O audit confirms deployment metadata, not runtime Metal ABI support.
 import argparse
 import json
 from pathlib import Path
+import plistlib
 import struct
 
 PATCHES = {
     "scripts/build-turnip-darwin.py": [
         ("'ios': 'arm64-apple-ios17.0'", "'ios': 'arm64-apple-ios16.0'"),
+        ("'ios': 'build/mesa-tu-ios'", "'ios': 'build/mesa-tu-ios16'"),
     ],
     "scripts/build-adreno-metal-plugin.py": [
         ("'ios': 'arm64-apple-ios17.0'", "'ios': 'arm64-apple-ios16.0'"),
+        ("('mesa-tu-' + TARGET)", "('mesa-tu-ios16' if TARGET == 'ios' else 'mesa-tu-' + TARGET)"),
         ("'MinimumOSVersion': '27.0' if IOS27 else '17.0'",
          "'MinimumOSVersion': '27.0' if IOS27 else '16.0'"),
         ("frontend = (ROOT / 'drivers/AdrenoMetal/NativeBridgeMetalFrontend.mm').read_text()",
@@ -29,6 +32,8 @@ PATCHES = {
     "scripts/build-adreno-metal-bridge.py": [
         ("IPHONEOS_DEPLOYMENT_TARGET='27.0' if args.target == 'ios27' else '17.0'",
          "IPHONEOS_DEPLOYMENT_TARGET='27.0' if args.target == 'ios27' else '16.0'"),
+        ("target_dir = ROOT / 'build/m2v-target'\n",
+         "target_dir = ROOT / ('build/m2v-target-ios16' if args.target == 'ios' else 'build/m2v-target')\n"),
     ],
 }
 
@@ -100,6 +105,17 @@ def macho_min_version(path):
     return {"path": str(path), "cpu": "arm64", "min_ios": version(minimum), "file_type": kind}
 
 
+def audit_plugin(folder):
+    bundle = folder / "NativeAdrenoMetal.bundle"
+    paths = (bundle / "NativeAdrenoMetal", bundle / "libvulkan_freedreno.dylib", folder / "adrenoprobed")
+    report = [macho_min_version(path) for path in paths]
+    info = bundle / "Info.plist"
+    minimum = plistlib.loads(info.read_bytes()).get("MinimumOSVersion")
+    if minimum != "16.0":
+        raise ValueError(f"{info}: expected MinimumOSVersion 16.0, got {minimum!r}")
+    return report
+
+
 def selftest():
     from tempfile import TemporaryDirectory
     with TemporaryDirectory() as temporary:
@@ -122,7 +138,31 @@ def selftest():
             pass
         else:
             raise AssertionError("modified upstream anchor was not rejected")
+        bundle = base / "NativeAdrenoMetal.bundle"
+        bundle.mkdir()
+        header = struct.pack("<IiiIIIII", 0xfeedfacf, 0x100000c, 0, 8, 1, 24, 0, 0)
+        for path in (bundle / "NativeAdrenoMetal", bundle / "libvulkan_freedreno.dylib", base / "adrenoprobed"):
+            path.write_bytes(header + struct.pack("<6I", 0x32, 24, 2, 16 << 16, 17 << 16, 0))
+        info = bundle / "Info.plist"
+        info.write_bytes(plistlib.dumps({"MinimumOSVersion": "16.0"}))
+        assert len(audit_plugin(base)) == 3
+        for path, content, message in (
+            (bundle / "NativeAdrenoMetal", header + struct.pack("<6I", 0x32, 24, 2, 17 << 16, 17 << 16, 0),
+             "minimum iOS version 17.0.0"),
+            (info, plistlib.dumps({"MinimumOSVersion": "17.0"}), "expected MinimumOSVersion 16.0"),
+        ):
+            original = path.read_bytes()
+            path.write_bytes(content)
+            try:
+                audit_plugin(base)
+            except ValueError as error:
+                assert message in str(error)
+            else:
+                raise AssertionError("iOS 17 deployment metadata was not rejected")
+            finally:
+                path.write_bytes(original)
     print("PASS: iOS16 target patches are strict and idempotent")
+    print("PASS: the plugin audit rejects iOS 17 Mach-O and Info.plist metadata")
 
 
 def main():
@@ -139,11 +179,7 @@ def main():
     else:
         if args.tree is None:
             parser.error("audit needs the plugin build directory")
-        folder = args.tree
-        paths = [folder / "NativeAdrenoMetal.bundle/NativeAdrenoMetal",
-                 folder / "NativeAdrenoMetal.bundle/libvulkan_freedreno.dylib",
-                 folder / "adrenoprobed"]
-        print(json.dumps([macho_min_version(path) for path in paths], indent=2))
+        print(json.dumps(audit_plugin(args.tree), indent=2))
 
 
 if __name__ == "__main__":
