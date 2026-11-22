@@ -67,7 +67,7 @@ def patch_priming_checker(priming: str) -> str:
     )
     priming = replace_once(
         priming, priming_env,
-        priming_env[:-1] + ", NATIVE_METAL_FLOW='3')\n",
+        priming_env[:-2] + ", NATIVE_METAL_FLOW='3')\n",
         "priming-only warm-pass isolation",
     )
     records_anchor = "records = [p for p in cache.rglob('*') if p.is_file()]\n"
