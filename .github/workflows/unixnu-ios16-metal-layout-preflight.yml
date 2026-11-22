@@ -1,0 +1,98 @@
+name: iOS16 Metal pinned volume layout preflight
+
+on:
+  push:
+    branches: [diagnostic/ios16-ci32-metal-layout]
+    paths:
+      - '.github/workflows/unixnu-ios16-metal-layout-preflight.yml'
+      - 'ios16/check-metal-layout.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios16-metal-layout-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CORE_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
+
+jobs:
+  inspect-original-volumes:
+    name: Verify 20H392 OS/SystemOS and enumerate AGXMetal
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate the isolated read-only preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile device/ios16/check-metal-layout.py device/ios16/prepare-volumes.py
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import tempfile
+          spec = importlib.util.spec_from_file_location("metal_layout", "device/ios16/check-metal-layout.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          with tempfile.TemporaryDirectory() as tmp:
+              ext = Path(tmp) / 'System/Library/Extensions'
+              ext.mkdir(parents=True)
+              (ext / 'AGXMetalA11.bundle').mkdir()
+              assert module.inspect_system(Path(tmp))['expected_agxmetal_a11_exists']
+              (ext / 'AGXMetalA11.bundle').rmdir()
+              assert not module.inspect_system(Path(tmp))['expected_agxmetal_a11_exists']
+          print('PASS: fixture validates path lookup and missing-path detection')
+          PY
+      - name: Check out exact pinned UniXNU core for IPSW extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
+          git -C UniXNU checkout --detach "$CORE_REVISION"
+          test "$(git -C UniXNU rev-parse HEAD)" = "$CORE_REVISION"
+          command -v hdiutil
+          command -v diskutil
+      - name: Extract and verify original OS/SystemOS images (no kernel build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          python3 device/ios16/prepare-volumes.py UniXNU "$RUNNER_TEMP/iphone-volumes" 2>&1 | tee diagnostics/volume-inputs.log
+      - name: Inspect original Extensions layout (read-only mounts)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 device/ios16/check-metal-layout.py volumes \
+            --volumes-dir "$RUNNER_TEMP/iphone-volumes" \
+            --out diagnostics/metal-layout.json 2>&1 | tee diagnostics/metal-layout.log
+      - name: Report Metal Data Seed stage availability
+        shell: bash
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          Path('diagnostics/seed-stage.json').write_text(json.dumps({
+            'status': 'NOT_RUN',
+            'reason': 'Metal Data Seed is generated only after the plugin build in the isolated full kernel workflow.',
+            'future_command': 'python3 device/ios16/check-metal-layout.py seed --core UniXNU --seed <data-2g-skip-metal.dbr> --out diagnostics/metal-seed.json',
+            'full_build_started': False
+          }, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-metal-original-volume-preflight
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
