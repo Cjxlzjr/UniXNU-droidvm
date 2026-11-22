@@ -345,6 +345,7 @@ class HybridBuild(base.Build):
                     '    if run.returncode != 0 or not match or match[1] != mode:\n'
                     '        print("IOS16_QUARTZCORE_SUBPROCESS", mode, run.returncode, (run.stdout + run.stderr)[-14000:], flush=True)\n'
                     '    require('))
+                compile(script, str(self.tree / 'scripts' / name), 'exec')
                 (self.tree / 'scripts' / name).write_text(script)
 
         library = inputs / 'default.metallib'
