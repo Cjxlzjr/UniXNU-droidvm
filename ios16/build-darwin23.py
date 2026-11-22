@@ -337,13 +337,13 @@ class HybridBuild(base.Build):
                 if script.count(anchor) != 1:
                     raise ValueError('QuartzCore test counter anchor changed upstream')
                 script = script.replace(anchor, anchor +
-                    '    print("IOS16_QUARTZCORE_OBSERVED", mode, json.dumps(values, sort_keys=True), flush=True)\\n')
+                    '    print("IOS16_QUARTZCORE_OBSERVED", mode, json.dumps(values, sort_keys=True), flush=True)\n')
                 test_anchor = "    require(run.returncode == 0 and match and match[1] == mode, 'Actual UI compiler/cache control failed: ' + mode + '; see preserved log')\n"
                 if script.count(test_anchor) != 1:
                     raise ValueError('QuartzCore test status anchor changed upstream')
                 script = script.replace(test_anchor, test_anchor.replace('    require(', 
-                    '    if run.returncode != 0 or not match or match[1] != mode:\\n'
-                    '        print("IOS16_QUARTZCORE_SUBPROCESS", mode, run.returncode, (run.stdout + run.stderr)[-14000:], flush=True)\\n'
+                    '    if run.returncode != 0 or not match or match[1] != mode:\n'
+                    '        print("IOS16_QUARTZCORE_SUBPROCESS", mode, run.returncode, (run.stdout + run.stderr)[-14000:], flush=True)\n'
                     '    require('))
                 (self.tree / 'scripts' / name).write_text(script)
 
