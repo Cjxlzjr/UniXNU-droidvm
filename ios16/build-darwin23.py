@@ -298,8 +298,20 @@ class HybridBuild(base.Build):
 
     def step_plugin(self):
         self.prepare_turnip_host_checks()
-        super().step_plugin()
+        # Run the complete upstream host suite before the expensive signed
+        # Rust/Metal link. Fail fast if a real regression is detected; do not
+        # downgrade, skip or silently rename any failed host test.
+        self.prepare_mesa()
+        self.script('build-turnip-darwin.py', '--target', 'ios', logfile=self.logs / 'turnip-ios.log')
+        self.script('build-turnip-darwin.py', '--target', 'host', logfile=self.logs / 'turnip-host.log')
+        status = self.script('check-turnip-darwin-host.py', logfile=self.logs / 'turnip-host-check.log', check=False)
+        failed = sorted(p.stem for p in (self.tree / 'build/turnip-darwin-host').glob('*.log')
+                        if 'FAIL' in p.read_text(errors='replace'))
+        self.record_check('turnip-host', 'PASS' if status == 0 else 'FAIL ' + ' '.join(failed or ['(see the log)']))
         self.verify_turnip_host_check()
+        if not (self.tree / 'build/turnip-darwin-host/plugin_smoke').is_file():
+            raise ValueError('Host test produced no plugin_smoke binary')
+        self.script('build-adreno-metal-plugin.py', logfile=self.logs / 'plugin.log')
 
     def prepare_turnip_host_checks(self):
         inputs = self.tree / 'build/turnip-host-inputs'
@@ -319,6 +331,20 @@ class HybridBuild(base.Build):
                 if script.count(original) != 1:
                     raise ValueError(f'{name}: expected one mounted-library path')
                 script = script.replace(original, "LIBRARY = ROOT / 'build/turnip-host-inputs/default.metallib'")
+                # Keep the original assertions unchanged. Surface the measured counters
+                # and the failing command's logs before CI destroys its temporary workdir.
+                anchor = "    values = dict(zip(fields, map(int, match.groups()[1:])))\n"
+                if script.count(anchor) != 1:
+                    raise ValueError('QuartzCore test counter anchor changed upstream')
+                script = script.replace(anchor, anchor +
+                    '    print("IOS16_QUARTZCORE_OBSERVED", mode, json.dumps(values, sort_keys=True), flush=True)\\n')
+                test_anchor = "    require(run.returncode == 0 and match and match[1] == mode, 'Actual UI compiler/cache control failed: ' + mode + '; see preserved log')\n"
+                if script.count(test_anchor) != 1:
+                    raise ValueError('QuartzCore test status anchor changed upstream')
+                script = script.replace(test_anchor, test_anchor.replace('    require(', 
+                    '    if run.returncode != 0 or not match or match[1] != mode:\\n'
+                    '        print("IOS16_QUARTZCORE_SUBPROCESS", mode, run.returncode, (run.stdout + run.stderr)[-14000:], flush=True)\\n'
+                    '    require('))
                 (self.tree / 'scripts' / name).write_text(script)
 
         library = inputs / 'default.metallib'
