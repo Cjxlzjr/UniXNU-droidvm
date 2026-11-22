@@ -55,6 +55,31 @@ def patch_priming_checker(priming: str) -> str:
     )
     priming = replace_once(priming, case_log_anchor, case_log_rewrite, "case log")
 
+    # The production NativeMetal runtime enables an independent background
+    # pipeline-record warm pass (flow bit 4) by default. It creates its own
+    # pipeline-records-*.bin file, which is not part of the shader cache
+    # record that this isolated *one-file* priming test is qualifying.
+    # Preserve render lowering and submissions (bits 1+2); run the separate
+    # QuartzCore controls independently with the same isolation.
+    priming_env = (
+        "env.update(DYLD_INSERT_LIBRARIES=str(peer), "
+        "NMB_TEST_PRIMING_CACHE_LOADER=str(loader))\n"
+    )
+    priming = replace_once(
+        priming, priming_env,
+        priming_env[:-1] + ", NATIVE_METAL_FLOW='3')\n",
+        "priming-only warm-pass isolation",
+    )
+    records_anchor = "records = [p for p in cache.rglob('*') if p.is_file()]\n"
+    priming = replace_once(
+        priming, records_anchor,
+        records_anchor +
+        "print('IOS16_PRIMING_CACHE_FILES', json.dumps(" 
+        "[(str(p.relative_to(cache)), p.stat().st_size) for p in records], "
+        "sort_keys=True), flush=True)\n",
+        "priming cache inventory",
+    )
+
     # The strict producer/consumer cache-hit checks and all UUID/negative
     # controls are still present in the original source.
     compile(priming, "pinned/check-priming-cache-host.py", "exec")
@@ -73,6 +98,12 @@ def selftest() -> None:
         raise ValueError("Expected one priming counter diagnostic")
     if patched.count("IOS16_PRIMING_SUBPROCESS") != 1:
         raise ValueError("Expected one per-case failure diagnostic")
+    if patched.count("IOS16_PRIMING_CACHE_FILES") != 1:
+        raise ValueError("Expected one priming cache inventory before the strict one-file assertion")
+    if patched.count("NATIVE_METAL_FLOW='3'") != 1:
+        raise ValueError("The isolated priming test must disable only the background warm pass")
+    if "Exactly one bounded native priming record" not in patched:
+        raise ValueError("Priming cache file count and checksum checks must be preserved")
     if "    if mode in ('cold-miss', 'uuid-miss'):\n" not in patched:
         raise ValueError("Negative priming controls are missing")
     if original.count("    log.write_text(run.stdout + run.stderr)\n") != 2:

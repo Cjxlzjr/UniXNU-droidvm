@@ -298,20 +298,38 @@ class HybridBuild(base.Build):
 
     def step_plugin(self):
         self.prepare_turnip_host_checks()
-        # Run the complete upstream host suite before the expensive signed
-        # Rust/Metal link. Fail fast if a real regression is detected; do not
-        # downgrade, skip or silently rename any failed host test.
+        # Keep the host suites strict, but collect independent host and plugin
+        # build results in the same CI attempt. Never stage an unverified plugin.
         self.prepare_mesa()
         self.script('build-turnip-darwin.py', '--target', 'ios', logfile=self.logs / 'turnip-ios.log')
         self.script('build-turnip-darwin.py', '--target', 'host', logfile=self.logs / 'turnip-host.log')
-        status = self.script('check-turnip-darwin-host.py', logfile=self.logs / 'turnip-host-check.log', check=False)
+        host_status = self.script('check-turnip-darwin-host.py',
+                                  logfile=self.logs / 'turnip-host-check.log', check=False)
         failed = sorted(p.stem for p in (self.tree / 'build/turnip-darwin-host').glob('*.log')
                         if 'FAIL' in p.read_text(errors='replace'))
-        self.record_check('turnip-host', 'PASS' if status == 0 else 'FAIL ' + ' '.join(failed or ['(see the log)']))
-        self.verify_turnip_host_check()
+        self.record_check('turnip-host', 'PASS' if host_status == 0
+                          else 'FAIL ' + ' '.join(failed or ['(see the log)']))
         if not (self.tree / 'build/turnip-darwin-host/plugin_smoke').is_file():
-            raise ValueError('Host test produced no plugin_smoke binary')
-        self.script('build-adreno-metal-plugin.py', logfile=self.logs / 'plugin.log')
+            self.verify_turnip_host_check()
+            raise ValueError('Host suite did not produce plugin_smoke binary')
+
+        # Compilation is independent of the shader-cache regression verdict.
+        # Diagnose link/API failures in this same CI run even if a host case
+        # fails, while still refusing the payload/Release if either fails.
+        plugin_status = self.script('build-adreno-metal-plugin.py',
+                                    logfile=self.logs / 'plugin.log', check=False)
+        self.record_check('gpu-plugin-build',
+                          'PASS' if plugin_status == 0 else f'FAIL exit={plugin_status}')
+        if plugin_status:
+            log = self.logs / 'plugin.log'
+            if log.is_file():
+                base.log('Metal plugin compiler/linker tail:')
+                print('\n'.join(log.read_text(errors='replace').splitlines()[-80:]), flush=True)
+        if host_status and plugin_status:
+            raise ValueError('Host regressions AND Metal plugin build failed; see turnip-host-check.log and plugin.log')
+        self.verify_turnip_host_check()
+        if plugin_status:
+            raise ValueError('Metal plugin build failed; see plugin.log')
 
     def prepare_turnip_host_checks(self):
         inputs = self.tree / 'build/turnip-host-inputs'
