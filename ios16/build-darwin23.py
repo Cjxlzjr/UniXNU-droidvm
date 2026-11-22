@@ -359,6 +359,32 @@ class HybridBuild(base.Build):
                 if script.count(producer_old) != 1:
                     raise ValueError('QuartzCore cache producer invariant changed upstream')
                 script = script.replace(producer_old, producer_new)
+                # This test validates strict shader-cache persistence. The optional
+                # NativeMetal warm-pass (flow bit 4) can append its own pipeline
+                # records after a successful cache hit, changing the cache
+                # directory for reasons unrelated to shader-cache writes.
+                # Preserve flow bits 1+2 (render lowering and GPU submission).
+                cache_env = ("env.update(DYLD_INSERT_LIBRARIES=str(PEER), "
+                             "NMB_TEST_GRAPHICS_CACHE_LOADER=str(loader), "
+                             "NMB_TEST_QUARTZCORE_LIBRARY=str(LIBRARY))")
+                if script.count(cache_env) != 1:
+                    raise ValueError('QuartzCore runtime environment anchor changed upstream')
+                script = script.replace(cache_env, cache_env[:-1] + ", NATIVE_METAL_FLOW='3')")
+                immutable_guard = "    require(manifest(Path(str(prefix) + '.cache')) == original_manifest, 'Consumed/negative controls preserve every producer cache byte')\n"
+                if script.count(immutable_guard) != 1:
+                    raise ValueError('QuartzCore immutable-cache assertion changed upstream')
+                immutable_diagnostic = (
+                    "    observed_manifest = manifest(Path(str(prefix) + '.cache'))\n"
+                    "    if observed_manifest != original_manifest:\n"
+                    "        before_keys, after_keys = set(original_manifest), set(observed_manifest)\n"
+                    "        cache_diff = {'removed': sorted(before_keys - after_keys),\n"
+                    "                      'added': sorted(after_keys - before_keys),\n"
+                    "                      'changed': sorted(name for name in before_keys & after_keys\n"
+                    "                                        if original_manifest[name] != observed_manifest[name])}\n"
+                    "        print('IOS16_QUARTZCORE_CACHE_DIFF', mode, json.dumps(cache_diff, sort_keys=True), flush=True)\n"
+                    "    require(observed_manifest == original_manifest, 'Consumed/negative controls preserve every producer cache byte')\n"
+                )
+                script = script.replace(immutable_guard, immutable_diagnostic)
                 compile(script, str(self.tree / 'scripts' / name), 'exec')
                 (self.tree / 'scripts' / name).write_text(script)
 
