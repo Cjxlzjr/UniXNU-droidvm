@@ -117,13 +117,31 @@ subprocess.run([sys.executable, ROOT / 'scripts/check-turnip-pipeline-cache-host
 # feedback and genuine UUID/empty-cache refusals. The software peer runs no shader.
 if ios16_inputs:
     subprocess.run([sys.executable, ROOT / 'scripts/build-adreno-metal-bridge.py', '--target', 'host'], check=True)
+# The regression suites are independent. Collect both outcomes and proceed to
+# the plugin smoke/watchdog so a single CI run exposes more than the first
+# failure. Never mark the host check PASS when any suite fails.
+host_regressions = []
+
+def run_host_regression(label, path, output, timeout):
+    args = [sys.executable, ROOT / 'scripts' / path, '--output', output]
+    try:
+        result = subprocess.run(args, check=False, timeout=timeout)
+        if result.returncode:
+            error = f'{label}: exit={result.returncode}'
+            host_regressions.append(error)
+            print('FAIL host regression:', error, flush=True)
+    except subprocess.TimeoutExpired:
+        error = f'{label}: timeout after {timeout}s'
+        host_regressions.append(error)
+        print('FAIL host regression:', error, flush=True)
+
 with tempfile.TemporaryDirectory(prefix='quartzcore-driver-cache-', dir=out) as temporary:
-    subprocess.run([sys.executable, ROOT / 'scripts/check-quartzcore-turnip-cache-host.py',
-                    '--output', Path(temporary) / 'control'], check=True, timeout=660)
+    run_host_regression('quartzcore', 'check-quartzcore-turnip-cache-host.py',
+                        Path(temporary) / 'control', 660)
 
 with tempfile.TemporaryDirectory(prefix='priming-driver-cache-', dir=out) as temporary:
-    subprocess.run([sys.executable, ROOT / 'scripts/check-priming-cache-host.py',
-                    '--output', Path(temporary) / 'control'], check=True, timeout=360)
+    run_host_regression('priming', 'check-priming-cache-host.py',
+                        Path(temporary) / 'control', 360)
 
 env_plugin = dict(env)
 plugin = subprocess.run([str(plugin_smoke), str(library)], env=env_plugin, capture_output=True, text=True, timeout=300)
@@ -139,6 +157,8 @@ lines = [l for l in stalled.stdout.splitlines() if l.startswith('watchdog: W ')]
 print('\n'.join(lines))
 if stalled.returncode or len(lines) != 1 or not lines[0].startswith('watchdog: W 6004 ') or ' v' not in lines[0] or 'kern' in lines[0]:
     sys.exit('The plugin watchdog did not sample the stalled worker as expected; see %s' % (out / 'plugin_watchdog.log'))
+if host_regressions:
+    sys.exit('FAIL: independent host regressions: ' + '; '.join(host_regressions))
 print('PASS: the plugin watchdog sampled a worker blocked in vkCreateDevice (one line, marker 6004, frames inside Turnip)')
 print('PASS: the plugin Turnip sequence (fill, compute pipeline, render pass) built, submitted and retired every command buffer over the host kernel stack (the software CP executes nothing, so no result is verified by design)')
 print('PASS: Turnip darwin backend drove a Vulkan instance, device, memory mapping and a submission over the host kernel stack; no GPU')

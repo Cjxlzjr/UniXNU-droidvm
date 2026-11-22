@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py
+          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py
           python3 device/ios16/metal-experiment.py selftest
           python3 device/ios16/metal-trust.py --selftest
           python3 device/ios16/host_check_integration.py
@@ -103,6 +103,22 @@ jobs:
           ADRENO_METAL_REPLAY: '0'
         run: |
           set -euo pipefail
+          diagnose_failure() {
+            local result=$?
+            trap - EXIT
+            if [[ "$result" -ne 0 ]]; then
+              for name in turnip-host-check.log plugin.log turnip-ios.log turnip-host.log; do
+                file="$BUILD_DIR/droidvm/build-all/logs/$name"
+                if [[ -s "$file" ]]; then
+                  echo "::group::$name (last 100 lines)"
+                  tail -n 100 "$file"
+                  echo "::endgroup::"
+                fi
+              done
+            fi
+            exit "$result"
+          }
+          trap diagnose_failure EXIT
           python3 device/ios16/build-darwin23.py kernel --gpu-stage "$GPU_STAGE" --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/kernel-metal.log
       - name: Audit iOS16 plugin and original Apple trust modules
         if: env.GPU_STAGE == 'metal'
