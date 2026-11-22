@@ -414,32 +414,11 @@ class HybridBuild(base.Build):
         # may create additional initialization pipelines and submit barriers.
         # Keep all positive Vulkan feedback, cache-hit, negative-refusal, UUID,
         # file-integrity and live-object assertions intact.
+        # Keep the patch in one testable helper; the same pinned checker is
+        # verified in the cheap Actions preflight before any system build.
+        from host_check_integration import patch_priming_checker
         priming_path = self.tree / 'scripts/check-priming-cache-host.py'
-        priming = priming_path.read_text()
-        counter_guard = ("    require(data['submissions'] == 1 and data['compute_calls'] == 1, "
-                         "'Full priming still submits its barriers; observed non-generated compute shape')\n")
-        if priming.count(counter_guard) != 1:
-            raise ValueError('Pinned priming checker counter guard changed')
-        new_counter_guard = (
-            "    print('IOS16_PRIMING_OBSERVED', mode, json.dumps(data, sort_keys=True), flush=True)\n"
-            "    if mode in ('cold-miss', 'uuid-miss'):\n"
-            "        require(data['submissions'] == 1 and data['compute_calls'] == 1,\n"
-            "                'Negative priming control changed its exact initial shape')\n"
-            "    else:\n"
-            "        require(data['submissions'] > 0 and data['compute_calls'] > 0,\n"
-            "                'Full priming did not create a compute pipeline and submit barriers')\n"
-        )
-        priming = priming.replace(counter_guard, new_counter_guard)
-        case_log_anchor = "    log.write_text(run.stdout + run.stderr)\n"
-        if priming.count(case_log_anchor) != 1:
-            raise ValueError('Pinned priming checker subprocess log anchor changed')
-        priming = priming.replace(case_log_anchor, case_log_anchor +
-            "    shutil.copyfile(log, OUT / ('last-' + label + '.log'))\n"
-            "    if run.returncode or not pattern.search(run.stdout):\n"
-            "        print('IOS16_PRIMING_SUBPROCESS', label, 'exit', run.returncode,\n"
-            "              'output', (run.stdout + run.stderr)[-12000:], flush=True)\n")
-        compile(priming, str(priming_path), 'exec')
-        priming_path.write_text(priming)
+        priming_path.write_text(patch_priming_checker(priming_path.read_text()))
         self.env['DROIDVM_IOS16_METAL_HOST_CHECKS'] = '1'
 
     def verify_turnip_host_check(self):
