@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import runpy
 import shutil
@@ -15,6 +16,7 @@ import sys
 from tempfile import TemporaryDirectory
 import tomllib
 from types import SimpleNamespace
+from urllib.request import urlopen
 import uuid
 
 DEVICE = Path(__file__).resolve().parents[1]
@@ -39,6 +41,18 @@ SEED = 'data-2g-skip-app.dbr'
 METAL_SEED = 'data-2g-skip-metal.dbr'
 GPU_STAGES = ('off', '3d', 'metal')
 PORT_PATCH = IOS / 'patches/legacy-mach-inherited-ports.patch'
+HOST_CHECK_SOURCES = {
+    'deferred_bo.cpp': (
+        'https://raw.githubusercontent.com/UniXNU/Adreno740/6a3c9a8865e0feae9b3be72a3c8bb4f0595d93ba/tests/hostsim/deferred_bo.cpp',
+        '35ba6f5e313ff21d14ba2884365181ebc871cfcf820e41567e8b1eaa11eb399e',
+    ),
+    'check-quartzcore-turnip-cache-host.py': (
+        'https://raw.githubusercontent.com/UniXNU/UniXNU-sheng/516a780473a2ac59c8b438e132bb60204dda9e22/scripts/check-quartzcore-turnip-cache-host.py',
+        'eae106179803091de6d065a57fd9af737184d1bae90927313255521c84fcc311',
+    ),
+}
+QUARTZCORE_LIBRARY = 'System/Library/Frameworks/QuartzCore.framework/default.metallib'
+QUARTZCORE_DONOR_SHA256 = '606f913adf520420f9b4bb666efb782a68c830f082f1e559e17b20d0d13adbc9'
 
 
 def replace_field(text, field, value):
@@ -283,8 +297,78 @@ class HybridBuild(base.Build):
             self.run_step('gpu-trust', self.step_gpu_trust)
 
     def step_plugin(self):
-        super().step_plugin()
+        self.prepare_turnip_host_checks()
+        # Run the complete upstream host suite before the expensive signed
+        # Rust/Metal link. Fail fast if a real regression is detected; do not
+        # downgrade, skip or silently rename any failed host test.
+        self.prepare_mesa()
+        self.script('build-turnip-darwin.py', '--target', 'ios', logfile=self.logs / 'turnip-ios.log')
+        self.script('build-turnip-darwin.py', '--target', 'host', logfile=self.logs / 'turnip-host.log')
+        status = self.script('check-turnip-darwin-host.py', logfile=self.logs / 'turnip-host-check.log', check=False)
+        failed = sorted(p.stem for p in (self.tree / 'build/turnip-darwin-host').glob('*.log')
+                        if 'FAIL' in p.read_text(errors='replace'))
+        self.record_check('turnip-host', 'PASS' if status == 0 else 'FAIL ' + ' '.join(failed or ['(see the log)']))
         self.verify_turnip_host_check()
+        if not (self.tree / 'build/turnip-darwin-host/plugin_smoke').is_file():
+            raise ValueError('Host test produced no plugin_smoke binary')
+        self.script('build-adreno-metal-plugin.py', logfile=self.logs / 'plugin.log')
+
+    def prepare_turnip_host_checks(self):
+        inputs = self.tree / 'build/turnip-host-inputs'
+        inputs.mkdir(parents=True, exist_ok=True)
+        for name, (url, expected) in HOST_CHECK_SOURCES.items():
+            with urlopen(url, timeout=60) as response:
+                content = response.read(64 * 1024)
+            if hashlib.sha256(content).hexdigest() != expected:
+                raise ValueError(f'{name} differs from the pinned host test source')
+            if name == 'deferred_bo.cpp':
+                (inputs / name).write_bytes(content)
+            else:
+                # The upstream cache instrument is qualified with the original 21H461 library.
+                # Give it that read-only test input without changing the active iPhone OS mount.
+                original = f"LIBRARY = ROOT / '.cache/firmware/target-volumes/os-mount/{QUARTZCORE_LIBRARY}'"
+                script = content.decode('utf-8')
+                if script.count(original) != 1:
+                    raise ValueError(f'{name}: expected one mounted-library path')
+                script = script.replace(original, "LIBRARY = ROOT / 'build/turnip-host-inputs/default.metallib'")
+                # Keep the original assertions unchanged. Surface the measured counters
+                # and the failing command's logs before CI destroys its temporary workdir.
+                anchor = "    values = dict(zip(fields, map(int, match.groups()[1:])))\n"
+                if script.count(anchor) != 1:
+                    raise ValueError('QuartzCore test counter anchor changed upstream')
+                script = script.replace(anchor, anchor +
+                    '    print("IOS16_QUARTZCORE_OBSERVED", mode, json.dumps(values, sort_keys=True), flush=True)\n')
+                test_anchor = "    require(run.returncode == 0 and match and match[1] == mode, 'Actual UI compiler/cache control failed: ' + mode + '; see preserved log')\n"
+                if script.count(test_anchor) != 1:
+                    raise ValueError('QuartzCore test status anchor changed upstream')
+                script = script.replace(test_anchor, test_anchor.replace('    require(', 
+                    '    if run.returncode != 0 or not match or match[1] != mode:\n'
+                    '        print("IOS16_QUARTZCORE_SUBPROCESS", mode, run.returncode, (run.stdout + run.stderr)[-14000:], flush=True)\n'
+                    '    require('))
+                compile(script, str(self.tree / 'scripts' / name), 'exec')
+                (self.tree / 'scripts' / name).write_text(script)
+
+        library = inputs / 'default.metallib'
+        if not library.is_file() or base.sha256(library) != QUARTZCORE_DONOR_SHA256:
+            self.unixnu_cmd('ipsw', 'fetch', 'OS', logfile=self.logs / 'quartzcore-donor-os.log')
+            donor_os = self.out / 'ipsw' / self.board['ipsw']['build'] / base.OS_DMG
+            with TemporaryDirectory(dir=self.scratch) as folder:
+                mount = Path(folder) / 'mount'
+                mount.mkdir()
+                attached = plistlib.loads(subprocess.check_output([
+                    'hdiutil', 'attach', '-readonly', '-nobrowse', '-owners', 'off',
+                    '-mountpoint', str(mount), '-plist', str(donor_os),
+                ]))
+                device = next(e['dev-entry'] for e in attached['system-entities']
+                              if e.get('content-hint') == 'GUID_partition_scheme')
+                try:
+                    source = mount / QUARTZCORE_LIBRARY
+                    if base.sha256(source) != QUARTZCORE_DONOR_SHA256:
+                        raise ValueError('QuartzCore library differs from the qualified 21H461 input')
+                    shutil.copyfile(source, library)
+                finally:
+                    base.run(['hdiutil', 'detach', device], env=self.env)
+        self.env['DROIDVM_IOS16_METAL_HOST_CHECKS'] = '1'
 
     def verify_turnip_host_check(self):
         checks = self.stamps / 'checks.json'
