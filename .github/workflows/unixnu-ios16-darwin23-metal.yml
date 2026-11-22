@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: ios16-darwin23-metal-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   CORE_REVISION: dba62c1ca53cd04c25b0e501afff31d5ffe2e20e
