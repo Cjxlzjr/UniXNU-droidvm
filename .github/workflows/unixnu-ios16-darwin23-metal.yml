@@ -110,6 +110,18 @@ jobs:
           }
           trap diagnose_failure EXIT
           python3 device/ios16/build-darwin23.py kernel --gpu-stage "$GPU_STAGE" --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/kernel-metal.log
+      - name: Verify actual pinned Extensions and Metal Data Seed before payload
+        if: env.GPU_STAGE == 'metal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 device/ios16/check-metal-layout.py volumes \
+            --volumes-dir "$BUILD_DIR/droidvm/iphone-volumes" \
+            --out diagnostics/metal-layout.json 2>&1 | tee diagnostics/metal-layout.log
+          python3 device/ios16/check-metal-layout.py seed \
+            --core "$BUILD_DIR/droidvm/tree" \
+            --seed "$BUILD_DIR/droidvm/tree/build/droidvm-data/data-2g-skip-metal.dbr" \
+            --out diagnostics/metal-seed.json 2>&1 | tee diagnostics/metal-seed.log
       - name: Audit iOS16 plugin and original Apple trust modules
         if: env.GPU_STAGE == 'metal'
         shell: bash
