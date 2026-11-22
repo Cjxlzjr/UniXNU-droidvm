@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict iOS 16 deployment-target adaptation for the pinned Darwin 23 core.
+"""Strict iOS 16 Metal adaptation for the pinned Darwin 23 core.
 
 Only edits generated build-tree copies, never the upstream/core checkout.
 The Mach-O audit confirms deployment metadata, not runtime Metal ABI support.
@@ -11,6 +11,20 @@ import plistlib
 import struct
 
 PATCHES = {
+    "patches/xnu/zzy-native-gpu-addon-mount.patch": [
+        # The original lower-layer bundle in the pinned iPhone10,3 OS volume.
+        ('"/System/Library/Extensions/AGXMetalA10.bundle"',
+         '"/System/Library/Extensions/AGXMetalA11.bundle"'),
+    ],
+    "drivers/AdrenoMetal/NativeBridgeMetalFrontend.mm": [
+        # The iPhone10,3 20H392 ARM64 dyld cache records this class_ro_t instanceSize.
+        (" // The target's base class ABI (iPadOS 17.7.11, 536 bytes): the dynamic subclass adds no instance variables and reads none of the base's,\n"
+         " // so only 17's size is held to; the arm64e build (iPadOS 27, whose _MTLDevice is larger) needs the class to exist.",
+         " // iPhone10,3 on iOS 16.7.16 (20H392) has a 528-byte _MTLDevice. The subclass adds no instance variables.\n"
+         " // Keep the runtime size check for the ARM64 iOS 16 build."),
+        (' if(!base || class_getInstanceSize(base)!=536){NBLOG(@"native-metal: unexpected _MTLDevice ABI");return nil;}',
+         ' if(!base || class_getInstanceSize(base)!=528){NBLOG(@"native-metal: unexpected _MTLDevice ABI for 20H392 (expected 528)");return nil;}'),
+    ],
     "scripts/build-turnip-darwin.py": [
         ("'ios': 'arm64-apple-ios17.0'", "'ios': 'arm64-apple-ios16.0'"),
         ("'ios': 'build/mesa-tu-ios'", "'ios': 'build/mesa-tu-ios16'"),
@@ -42,10 +56,10 @@ def patched(text, substitutions, filename):
     for old, new in substitutions:
         if old in text:
             if text.count(old) != 1:
-                raise ValueError(f"{filename}: ambiguous deployment target anchor: {old}")
+                raise ValueError(f"{filename}: ambiguous iOS 16 adaptation anchor: {old}")
             text = text.replace(old, new)
         elif text.count(new) != 1:
-            raise ValueError(f"{filename}: pinned upstream script changed; missing {old!r}")
+            raise ValueError(f"{filename}: pinned upstream source changed; missing {old!r}")
     return text
 
 
@@ -161,7 +175,7 @@ def selftest():
                 raise AssertionError("iOS 17 deployment metadata was not rejected")
             finally:
                 path.write_bytes(original)
-    print("PASS: iOS16 target patches are strict and idempotent")
+    print("PASS: iOS16 Metal adaptations are strict and idempotent")
     print("PASS: the plugin audit rejects iOS 17 Mach-O and Info.plist metadata")
 
 
