@@ -24,7 +24,10 @@ out.mkdir(parents=True, exist_ok=True)
 HOSTSIM_SMMU_REV = '3ba92451bd44bb742d11758fbfcd3a446ecad685'
 smmu = out / 'legacy-ArmSmmu4K'
 if not (smmu / '.git').is_dir():
-    subprocess.run(['git', 'clone', '-q', '--filter=blob:none', '--no-checkout',
+    # Do not use a promisor/partial clone here: checkout of the pinned legacy
+    # revision must have its complete source blobs locally. GitHub Actions has
+    # no interactive credentials for an on-demand checkout blob fetch.
+    subprocess.run(['git', 'clone', '-q', '--depth', '1', '--no-checkout',
                     'https://github.com/UniXNU/ArmSmmu4K.git', str(smmu)], check=True)
 current = subprocess.run(['git', '-C', str(smmu), 'rev-parse', 'HEAD'],
                          capture_output=True, text=True, check=True).stdout.strip()
