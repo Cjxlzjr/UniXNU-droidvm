@@ -41,6 +41,7 @@ SEED = 'data-2g-skip-app.dbr'
 METAL_SEED = 'data-2g-skip-metal.dbr'
 GPU_STAGES = ('off', '3d', 'metal')
 PORT_PATCH = IOS / 'patches/legacy-mach-inherited-ports.patch'
+VA_TEARDOWN_PATCH = 'scripts/data/turnip-darwin-va-teardown.patch'
 HOST_CHECK_SOURCES = {
     'deferred_bo.cpp': (
         'https://raw.githubusercontent.com/UniXNU/Adreno740/6a3c9a8865e0feae9b3be72a3c8bb4f0595d93ba/tests/hostsim/deferred_bo.cpp',
@@ -291,10 +292,11 @@ class HybridBuild(base.Build):
             self.run_step(step, method)
         self.verify_kernel()
         if self.gpu_stage == 'metal':
-            # Older stamps can refer to an iOS 17 bundle and its seed/trust.
-            self.run_step('gpu-plugin-ios16', self.step_plugin)
-            self.run_step('gpu-seed-ios16', self.step_gpu_seed)
-            self.run_step('gpu-trust-ios16', self.step_gpu_trust)
+            # Keep the regenerated plugin, Data seed and trust cache together.
+            revision = base.sha256(DEVICE / VA_TEARDOWN_PATCH)[:12]
+            self.run_step(f'gpu-plugin-ios16-{revision}', self.step_plugin)
+            self.run_step(f'gpu-seed-ios16-{revision}', self.step_gpu_seed)
+            self.run_step(f'gpu-trust-ios16-{revision}', self.step_gpu_trust)
 
     def patch_metal_deployment(self, log):
         base.run([sys.executable, IOS / 'metal-experiment.py', 'patch', self.tree],
@@ -307,6 +309,14 @@ class HybridBuild(base.Build):
 
     def step_plugin(self):
         self.prepare_turnip_host_checks()
+        # Register the patch in the same pin list the Mesa builder verifies.
+        # Copy it explicitly so an existing build tree can pick up this fix.
+        shutil.copyfile(DEVICE / VA_TEARDOWN_PATCH, self.tree / VA_TEARDOWN_PATCH)
+        pins_path = self.tree / 'scripts/data/adreno-compiler-inputs.json'
+        pins = json.loads(pins_path.read_text())
+        if VA_TEARDOWN_PATCH not in pins['patches']:
+            pins['patches'].append(VA_TEARDOWN_PATCH)
+            pins_path.write_text(json.dumps(pins, indent=2) + '\n')
         self.prepare_mesa()
         # Kernel assembly can copy upstream scripts over the configure-time
         # adaptations. Apply them after the final UnixNU tree operation.
@@ -314,7 +324,6 @@ class HybridBuild(base.Build):
         watchdog = runpy.run_path(str(self.tree / 'scripts/hostsim_watchdog_patch.py'))
         with watchdog['staged_watchdog_driver'](self.tree):
             self.build_checked_plugin()
-        self.verify_metal_deployment()
 
     def build_checked_plugin(self):
         # Keep the host suites strict, but collect independent host and plugin
@@ -345,6 +354,8 @@ class HybridBuild(base.Build):
                 print('\n'.join(log.read_text(errors='replace').splitlines()[-80:]), flush=True)
         if host_status and plugin_status:
             raise ValueError('Host regressions AND Metal plugin build failed; see turnip-host-check.log and plugin.log')
+        if not plugin_status:
+            self.verify_metal_deployment()
         self.verify_turnip_host_check()
         if plugin_status:
             raise ValueError('Metal plugin build failed; see plugin.log')

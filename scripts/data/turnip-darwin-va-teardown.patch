@@ -1,0 +1,17 @@
+diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl_darwin.cc
+index 792102b..2d3df03 100644
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -1766,8 +1766,10 @@ darwin_device_finish(struct tu_device *dev)
+       if (retire->cache_stats.lookups)
+          darwin_cache_log(retire);
+       darwin_stats_state = NULL;
+-      rb_tree_foreach_safe(struct darwin_va_hole, hole, &retire->va.address, by_address)
+-         free(hole);
++      /* Unlink from both indexes before freeing: traversal can still climb
++       * through an earlier node's parent links until it is removed. */
++      while (struct rb_node *node = rb_tree_first(&retire->va.address))
++         darwin_va_del(&retire->va, rb_node_data(struct darwin_va_hole, node, by_address));
+       pthread_mutex_destroy(&retire->lock);
+       free(retire->entries);
+       free(retire->cache);
