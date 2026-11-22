@@ -24,7 +24,10 @@ out.mkdir(parents=True, exist_ok=True)
 HOSTSIM_SMMU_REV = '3ba92451bd44bb742d11758fbfcd3a446ecad685'
 smmu = out / 'legacy-ArmSmmu4K'
 if not (smmu / '.git').is_dir():
-    subprocess.run(['git', 'clone', '-q', '--filter=blob:none', '--no-checkout',
+    # Do not use a promisor/partial clone here: checkout of the pinned legacy
+    # revision must have its complete source blobs locally. GitHub Actions has
+    # no interactive credentials for an on-demand checkout blob fetch.
+    subprocess.run(['git', 'clone', '-q', '--depth', '1', '--no-checkout',
                     'https://github.com/UniXNU/ArmSmmu4K.git', str(smmu)], check=True)
 current = subprocess.run(['git', '-C', str(smmu), 'rev-parse', 'HEAD'],
                          capture_output=True, text=True, check=True).stdout.strip()
@@ -91,8 +94,10 @@ if result.returncode or 'PASS' not in result.stdout:
 # The actual KMD must defer native handle/view/IOVA retirement, bound pressure waits,
 # and preserve ownership on failures. This exercises real transport code, not pixels.
 deferred = out / 'deferred_bo'
+ios16_inputs = os.environ.get('DROIDVM_IOS16_METAL_HOST_CHECKS') == '1'
+deferred_source = (ROOT / 'build/turnip-host-inputs/deferred_bo.cpp' if ios16_inputs else sim / 'deferred_bo.cpp')
 subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-                '-I', '/opt/homebrew/include', '-I', kit, sim / 'deferred_bo.cpp', '-o', deferred], check=True)
+                '-I', '/opt/homebrew/include', '-I', kit, deferred_source, '-o', deferred], check=True)
 deferred_env = dict(env, TU_DARWIN_RETIRE_TRACE='1')
 deferred_env.pop('HOSTSIM_FAIL_USER_UNMAP', None)
 for mode in ['normal', 'busy', 'fence-error', 'free-error', 'lease-error', 'view-error', 'map-cleanup-error', 'pressure']:
@@ -110,13 +115,33 @@ for mode in ['normal', 'busy', 'fence-error', 'free-error', 'lease-error', 'view
 subprocess.run([sys.executable, ROOT / 'scripts/check-turnip-pipeline-cache-host.py'], check=True)
 # Original UI recipes additionally cover graphics-library caches, strict driver
 # feedback and genuine UUID/empty-cache refusals. The software peer runs no shader.
+if ios16_inputs:
+    subprocess.run([sys.executable, ROOT / 'scripts/build-adreno-metal-bridge.py', '--target', 'host'], check=True)
+# The regression suites are independent. Collect both outcomes and proceed to
+# the plugin smoke/watchdog so a single CI run exposes more than the first
+# failure. Never mark the host check PASS when any suite fails.
+host_regressions = []
+
+def run_host_regression(label, path, output, timeout):
+    args = [sys.executable, ROOT / 'scripts' / path, '--output', output]
+    try:
+        result = subprocess.run(args, check=False, timeout=timeout)
+        if result.returncode:
+            error = f'{label}: exit={result.returncode}'
+            host_regressions.append(error)
+            print('FAIL host regression:', error, flush=True)
+    except subprocess.TimeoutExpired:
+        error = f'{label}: timeout after {timeout}s'
+        host_regressions.append(error)
+        print('FAIL host regression:', error, flush=True)
+
 with tempfile.TemporaryDirectory(prefix='quartzcore-driver-cache-', dir=out) as temporary:
-    subprocess.run([sys.executable, ROOT / 'scripts/check-quartzcore-turnip-cache-host.py',
-                    '--output', Path(temporary) / 'control'], check=True, timeout=660)
+    run_host_regression('quartzcore', 'check-quartzcore-turnip-cache-host.py',
+                        Path(temporary) / 'control', 660)
 
 with tempfile.TemporaryDirectory(prefix='priming-driver-cache-', dir=out) as temporary:
-    subprocess.run([sys.executable, ROOT / 'scripts/check-priming-cache-host.py',
-                    '--output', Path(temporary) / 'control'], check=True, timeout=360)
+    run_host_regression('priming', 'check-priming-cache-host.py',
+                        Path(temporary) / 'control', 360)
 
 env_plugin = dict(env)
 plugin = subprocess.run([str(plugin_smoke), str(library)], env=env_plugin, capture_output=True, text=True, timeout=300)
@@ -132,6 +157,8 @@ lines = [l for l in stalled.stdout.splitlines() if l.startswith('watchdog: W ')]
 print('\n'.join(lines))
 if stalled.returncode or len(lines) != 1 or not lines[0].startswith('watchdog: W 6004 ') or ' v' not in lines[0] or 'kern' in lines[0]:
     sys.exit('The plugin watchdog did not sample the stalled worker as expected; see %s' % (out / 'plugin_watchdog.log'))
+if host_regressions:
+    sys.exit('FAIL: independent host regressions: ' + '; '.join(host_regressions))
 print('PASS: the plugin watchdog sampled a worker blocked in vkCreateDevice (one line, marker 6004, frames inside Turnip)')
 print('PASS: the plugin Turnip sequence (fill, compute pipeline, render pass) built, submitted and retired every command buffer over the host kernel stack (the software CP executes nothing, so no result is verified by design)')
 print('PASS: Turnip darwin backend drove a Vulkan instance, device, memory mapping and a submission over the host kernel stack; no GPU')
