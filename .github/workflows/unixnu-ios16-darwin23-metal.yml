@@ -2,7 +2,7 @@ name: UniXNU iOS 16 Darwin 23 Metal experiment
 
 on:
   push:
-    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33, experiment/ios16-darwin23-metal-ci34]
+    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33, experiment/ios16-darwin23-metal-ci34, experiment/ios16-darwin23-metal-ci47-macos15, experiment/ios16-darwin23-metal-ci47-xcode27]
   workflow_dispatch:
     inputs:
       gpu_stage:
@@ -28,7 +28,7 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ github.ref_name == 'experiment/ios16-darwin23-metal-ci34' && 'macos-26' || 'xcode-27' }}
+    runs-on: ${{ github.ref_name == 'experiment/ios16-darwin23-metal-ci47-macos15' && 'macos-15' || github.ref_name == 'experiment/ios16-darwin23-metal-ci34' && 'macos-26' || 'xcode-27' }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +38,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Select Xcode 26.3 on macOS 15
+        if: github.ref_name == 'experiment/ios16-darwin23-metal-ci47-macos15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          developer_dir=/Applications/Xcode_26.3.app/Contents/Developer
+          test -d "$developer_dir"
+          sudo xcode-select --switch "$developer_dir"
       - name: Validate isolated experiment scripts
         shell: bash
         run: |
