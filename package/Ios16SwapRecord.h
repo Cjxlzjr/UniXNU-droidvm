@@ -16,11 +16,15 @@ struct Field {
 };
 
 // Offsets are relative to the inline record sent by kern_SwapEnd. Match the
-// stores in the 20H392 and 21H461 SwapBegin and SwapSetLayer routines.
+// stores in the 20H392 and 21H461 SwapSetTimestamps, SwapBegin and
+// SwapSetLayer routines.
 constexpr Field kFields[] = {
+    {0x000, 0x000, 7 * 8},  // Timestamp kinds 1–7, same order and clock conversion
     {0x050, 0x098, 4},      // Swap generation
     {0x054, 0x09c, 4 * 4},  // Four IOSurface IDs
     {0x064, 0x0ac, 4 * 16}, // Four source rectangles
+    {0x0a4, 0x0ec, 4 * 4},  // Four layer edge modes
+    {0x0b4, 0x0fc, 4 * 4},  // Four layer edge alpha values
     {0x0c4, 0x10c, 4 * 16}, // Four destination rectangles
     {0x104, 0x14c, 8},      // Layer update and removal masks
     {0x10c, 0x154, 4},      // Companion layer mask
@@ -46,6 +50,25 @@ constexpr bool validFields() {
     return sourceEnd <= kIos16Size && destinationEnd <= kDarwin23Size;
 }
 static_assert(validFields(), "Swap fields must be ordered, non-overlapping and in bounds");
+
+constexpr size_t kUnmappedMaskSize = (kIos16Size + 7) / 8;
+
+// Diagnostics keep byte positions only. The wire payload stays with its caller.
+inline void captureUnmappedMask(const unsigned char (&source)[kIos16Size],
+                                unsigned char (&mask)[kUnmappedMaskSize]) {
+    for (auto &byte : mask)
+        byte = 0;
+    size_t index = 0;
+    for (size_t offset = 0; offset < kIos16Size; ++offset) {
+        if (index < sizeof(kFields) / sizeof(kFields[0])
+            && offset == kFields[index].source) {
+            offset += kFields[index++].size - 1;
+            continue;
+        }
+        if (source[offset])
+            mask[offset / 8] |= 1u << (offset % 8);
+    }
+}
 
 // Return the first unqualified nonzero byte as offset+1. SwapBegin clears
 // both wire layouts. Zero is the default for new or unused Darwin 23 fields.

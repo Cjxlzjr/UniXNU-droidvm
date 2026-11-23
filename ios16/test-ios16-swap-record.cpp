@@ -16,7 +16,9 @@ int main() {
             legacy[source + i] = expected[destination + i] = value;
         }
     };
-    copyField(0x50, 0x98, 0x54);
+    for (size_t kind = 0; kind < 7; ++kind)
+        copyField(kind * 8, kind * 8, 8);
+    copyField(0x50, 0x98, 0x74);
     copyField(0xc4, 0x10c, 0x4c);
     copyField(0x114, 0x15c, 16);
     copyField(0x134, 0x17c, 4);
@@ -31,12 +33,24 @@ int main() {
     assert(translate(legacy, native) == 0);
     assert(std::memcmp(native, expected, sizeof(native)) == 0);
 
-    // An unexpected value in the leading area, between fields, or at the
+    // An unexpected value beside the timestamps, between fields, or at the
     // end must be reported. The caller must never dispatch a partial record.
-    for (const auto index : {0x000, 0x0a4, 0x110, 0x466, 0x46b}) {
+    for (const auto index : {0x038, 0x04f, 0x110, 0x466, 0x46b}) {
         legacy[index] = 1;
         assert(translate(legacy, native) == static_cast<size_t>(index + 1));
         assert(std::memcmp(native, expected, sizeof(native)) == 0);
         legacy[index] = 0;
+    }
+
+    using namespace droidvm_ios16_swap;
+    unsigned char mask[kUnmappedMaskSize];
+    captureUnmappedMask(legacy, mask);
+    for (const auto byte : mask)
+        assert(byte == 0);
+    legacy[0x38] = legacy[0x110] = legacy[0x46b] = 1;
+    captureUnmappedMask(legacy, mask);
+    for (size_t offset = 0; offset < sizeof(mask) * 8; ++offset) {
+        const bool rejected = offset == 0x38 || offset == 0x110 || offset == 0x46b;
+        assert(bool(mask[offset / 8] & (1u << (offset % 8))) == rejected);
     }
 }

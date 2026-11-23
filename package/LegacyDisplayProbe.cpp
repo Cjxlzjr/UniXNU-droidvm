@@ -358,10 +358,13 @@ struct ClientStat {
 static ClientStat seenClients[kSeenClients];static unsigned seenClientCount;
 typedef IOReturn (*ExternalFn)(IOUserClient *,uint32_t,IOExternalMethodArguments *,IOExternalMethodDispatch *,OSObject *,void *);
 typedef IOReturn (*RegisterFn)(IOUserClient *,mach_port_t,UInt32,UInt32);
+constexpr uint32_t kIos16SwapRejectSamples = 4;
 extern "C" {
 uint32_t native_ios16_swap_converted;
 uint32_t native_ios16_swap_rejected;
 uint32_t native_ios16_swap_unmapped;
+uint32_t native_ios16_swap_reject_masks_ready;
+unsigned char native_ios16_swap_reject_masks[kIos16SwapRejectSamples][droidvm_ios16_swap::kUnmappedMaskSize];
 }
 
 static IOReturn forwardExternal(ExternalFn original, IOUserClient *client, uint32_t selector,
@@ -381,7 +384,11 @@ static IOReturn forwardExternal(ExternalFn original, IOUserClient *client, uint3
     const size_t unmapped = translate(source, input);
     if (unmapped) {
         __atomic_store_n(&native_ios16_swap_unmapped, static_cast<uint32_t>(unmapped), __ATOMIC_RELAXED);
-        __atomic_add_fetch(&native_ios16_swap_rejected, 1, __ATOMIC_RELAXED);
+        const uint32_t sample = __atomic_fetch_add(&native_ios16_swap_rejected, 1, __ATOMIC_RELAXED);
+        if (sample < kIos16SwapRejectSamples) {
+            captureUnmappedMask(source, native_ios16_swap_reject_masks[sample]);
+            __atomic_fetch_or(&native_ios16_swap_reject_masks_ready, 1u << sample, __ATOMIC_RELEASE);
+        }
         return kIOReturnBadArgument;
     }
     IOExternalMethodArguments converted = *args;
