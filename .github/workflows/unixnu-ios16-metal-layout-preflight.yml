@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/unixnu-ios16-metal-layout-preflight.yml'
       - 'ios16/check-metal-layout.py'
+      - 'ios16/ci33-extension-overlay.py'
+      - 'ios16/build-darwin23.py'
   workflow_dispatch:
 
 permissions:
@@ -35,7 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile device/ios16/check-metal-layout.py device/ios16/prepare-volumes.py
+          python3 -m py_compile device/ios16/check-metal-layout.py device/ios16/prepare-volumes.py device/ios16/ci33-extension-overlay.py
+          python3 device/ios16/ci33-extension-overlay.py selftest
           python3 - <<'PY'
           import importlib.util
           from pathlib import Path
@@ -61,6 +64,27 @@ jobs:
           test "$(git -C UniXNU rev-parse HEAD)" = "$CORE_REVISION"
           command -v hdiutil
           command -v diskutil
+      - name: Check CI33 Extensions XNU patch against exact pinned core
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location('ci33', 'device/ios16/ci33-extension-overlay.py')
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          upstream=Path('UniXNU/patches/xnu/zzy-native-gpu-addon-mount.patch').read_text()
+          before=upstream.replace('"/System/Library/Extensions/AGXMetalA10.bundle"',
+                                  '"/System/Library/Extensions/AGXMetalA11.bundle"')
+          assert before != upstream, 'Expected one A10 anchor'
+          patched=mod.apply(before)
+          assert patched != before
+          assert mod.apply(patched) == patched, 'Not idempotent'
+          assert 'native_gpu_addon_ext_selected_lower' in patched
+          assert 'native_gpu_addon_ext_post_owner' in patched
+          print('PASS: CI33 XNU diff anchors, hunk counts, idempotence and runtime diagnostics')
+          PY
       - name: Extract and verify original OS/SystemOS images (no kernel build)
         shell: bash
         run: |
