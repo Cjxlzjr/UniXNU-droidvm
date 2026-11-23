@@ -28,7 +28,7 @@ env:
 
 jobs:
   build:
-    runs-on: xcode-27
+    runs-on: ${{ github.ref_name == 'experiment/ios16-darwin23-metal-ci34' && 'macos-26' || 'xcode-27' }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +42,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-path
           python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py device/scripts/hostsim_watchdog_patch.py device/ios16/ci33-extension-overlay.py
           python3 device/ios16/ci33-extension-overlay.py selftest
           python3 device/ios16/metal-experiment.py selftest
@@ -75,7 +79,7 @@ jobs:
           printf '%s\n' '#include <vulkan/vulkan.h>' | \
             xcrun clang -I /opt/homebrew/include -Werror -x c -fsyntax-only -
           if [[ "$GPU_STAGE" == metal ]]; then
-            command -v rustup || { echo '::error::rustup missing on xcode-27 runner'; exit 1; }
+            command -v rustup || { echo '::error::rustup missing on macOS runner'; exit 1; }
             rustup toolchain install 1.98.0 --profile minimal
             rustup target add aarch64-apple-ios --toolchain 1.98.0
             printf '%s\n' '#![no_std]' 'pub fn probe() -> u32 { core::mem::size_of::<u64>() as u32 }' | \
