@@ -196,6 +196,8 @@ class HybridBuild(base.Build):
         self.unixnu_cmd('tree', logfile=self.logs / 'tree.log')
         if self.gpu_stage == 'metal':
             self.patch_metal_deployment('ios16-metal-configure-patch.log')
+            base.run([sys.executable, IOS / 'ci33-extension-overlay.py', 'patch', self.tree],
+                     env=self.env, logfile=self.logs / 'ios16-ci33-extensions-patch.log')
         if (self.tree / 'patches/xnu').resolve() != (self.device / 'patches/xnu').resolve():
             raise ValueError('The resolved tree did not select the hybrid UUID patches')
         for name, pin in EFI_PINS.items():
