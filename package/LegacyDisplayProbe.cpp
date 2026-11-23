@@ -136,6 +136,27 @@ volatile uint64_t native_legacy_rej_surfaces[4];
 volatile uint32_t native_legacy_rej_state[3],native_legacy_rej_options[3],native_legacy_rej_size[2],native_legacy_rej_rects[2][4];
 char native_legacy_rej_class[32];
 volatile uint64_t native_legacy_rej_surface[7];   // width, height, format, planes, stride, allocation, descriptor bytes of the last rejected surface
+
+// The first sample in each category is immutable after its ready bit is set.
+// No IOSurface object addresses or pixels are stored here.
+struct SwapWireSurfaceSample {
+    uint32_t pid;
+    uint32_t source[8];      // generation, four IDs, three layer masks
+    uint32_t translated[8];
+};
+struct SwapSurfaceDiagnostics {
+    uint32_t ready;          // bits 0/1: wire empty/nonempty, bits 2/3: accepted blank/surface
+    uint32_t wire[2];
+    uint32_t wireSuccess[2];
+    uint32_t nativeAccepted[2];
+    uint32_t nativeMasks[2][3];
+    SwapWireSurfaceSample wireSample[2];
+};
+static_assert(sizeof(SwapSurfaceDiagnostics) == 188, "Fixed diagnostic layout");
+extern "C" {
+SwapSurfaceDiagnostics native_ios16_swap_surface_diag;
+}
+
 void native_legacy_surface_rejected(uint64_t width,uint64_t height,uint32_t format,uint32_t planes,uint64_t stride,uint64_t allocation,uint64_t bytes) {
     native_legacy_rej_surface[0]=width;native_legacy_rej_surface[1]=height;native_legacy_rej_surface[2]=format;native_legacy_rej_surface[3]=planes;
     native_legacy_rej_surface[4]=stride;native_legacy_rej_surface[5]=allocation;native_legacy_rej_surface[6]=bytes;
@@ -235,6 +256,16 @@ extern "C" unsigned native_legacy_prepare_report(char *out,unsigned cap) {
         (unsigned long long)vsyncEvents[2],(unsigned long long)vsyncEvents[3],(unsigned long long)vsyncEvents[4],(unsigned long long)vsyncEvents[5]);
 }
 void native_legacy_swap_validation_observed(bool accepted,unsigned reason,const void *request,const void *surface) {
+    if (accepted && request) {
+        auto &diag = native_ios16_swap_surface_diag;
+        const unsigned category = surface != nullptr;
+        if (__atomic_fetch_add(&diag.nativeAccepted[category], 1, __ATOMIC_RELAXED) == 0) {
+            // Same layer-mask words as recordRejectedSwap and the original validator.
+            const auto *bytes = static_cast<const unsigned char *>(request);
+            memcpy(diag.nativeMasks[category], bytes + 792, sizeof(diag.nativeMasks[category]));
+            __atomic_fetch_or(&diag.ready, 1u << (2 + category), __ATOMIC_RELEASE);
+        }
+    }
     if(accepted)native_legacy_swap_stage(0);
     if(accepted)native_legacy_swap_accepted_count=native_legacy_swap_accepted_count+1;
     else {native_legacy_swap_rejected_count=native_legacy_swap_rejected_count+1;recordRejectedSwap(reason,request,surface);}
@@ -369,7 +400,7 @@ unsigned char native_ios16_swap_reject_masks[kIos16SwapRejectSamples][droidvm_io
 
 static IOReturn forwardExternal(ExternalFn original, IOUserClient *client, uint32_t selector,
                                 IOExternalMethodArguments *args, IOExternalMethodDispatch *dispatch,
-                                OSObject *target, void *ref) {
+                                OSObject *target, void *ref, int pid) {
     using namespace droidvm_ios16_swap;
     unsigned enabled = 0;
     if (selector != kSelector || !args || args->structureInputSize != kIos16Size
@@ -391,12 +422,29 @@ static IOReturn forwardExternal(ExternalFn original, IOUserClient *client, uint3
         }
         return kIOReturnBadArgument;
     }
+
+    uint32_t ids[4];
+    memcpy(ids, source + 0x054, sizeof(ids));
+    auto &diag = native_ios16_swap_surface_diag;
+    const unsigned category = (ids[0] | ids[1] | ids[2] | ids[3]) != 0;
+    if (__atomic_fetch_add(&diag.wire[category], 1, __ATOMIC_RELAXED) == 0) {
+        auto &sample = diag.wireSample[category];
+        sample.pid = static_cast<uint32_t>(pid);
+        memcpy(sample.source, source + 0x050, 5 * sizeof(uint32_t));
+        memcpy(sample.source + 5, source + 0x104, 3 * sizeof(uint32_t));
+        memcpy(sample.translated, input + 0x098, 5 * sizeof(uint32_t));
+        memcpy(sample.translated + 5, input + 0x14c, 3 * sizeof(uint32_t));
+        __atomic_fetch_or(&diag.ready, 1u << category, __ATOMIC_RELEASE);
+    }
     IOExternalMethodArguments converted = *args;
     converted.structureInput = input;
     converted.structureInputSize = sizeof(input);
     __atomic_add_fetch(&native_ios16_swap_converted, 1, __ATOMIC_RELAXED);
     // Keep the original synchronous dispatch, entitlement and argument checks.
-    return original(client, selector, &converted, dispatch, target, ref);
+    const IOReturn status = original(client, selector, &converted, dispatch, target, ref);
+    if (status == kIOReturnSuccess)
+        __atomic_fetch_add(&diag.wireSuccess[category], 1, __ATOMIC_RELAXED);
+    return status;
 }
 
 static ClientStat *statFor(IOUserClient *client) {
@@ -405,7 +453,7 @@ static ClientStat *statFor(IOUserClient *client) {
 }
 static IOReturn wrappedExternal(IOUserClient *client,uint32_t selector,IOExternalMethodArguments *args,IOExternalMethodDispatch *dispatch,OSObject *target,void *ref) {
     ClientStat *stat=statFor(client);
-    IOReturn status=stat?forwardExternal(reinterpret_cast<ExternalFn>(stat->original_external),client,selector,args,dispatch,target,ref):kIOReturnNotAttached;
+    IOReturn status=stat?forwardExternal(reinterpret_cast<ExternalFn>(stat->original_external),client,selector,args,dispatch,target,ref,stat->pid):kIOReturnNotAttached;
     if(stat) {
         if(selector==6 && args && args->scalarInput && args->scalarInputCount>=3) {
             const uint64_t *in=args->scalarInput;
