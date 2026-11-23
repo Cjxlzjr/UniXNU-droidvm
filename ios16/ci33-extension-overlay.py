@@ -11,7 +11,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 TARGET = Path("patches/xnu/zzy-native-gpu-addon-mount.patch")
-INSERT_BEFORE = "+static void\n+native_gpu_addon_prepare(proc_t p, user_addr_t scratch)\n"
+# The cryptex OS patch uses the definition of native_gpu_addon_prepare as
+# trailing context. Keep the probes away from that boundary.
+INSERT_BEFORE = "+static void\n+native_gpu_addon_mount(proc_t p, user_addr_t scratch, "
 OLD_CALL = (
     "+\tnative_gpu_addon_mount(p, scratch, 0x400, extensions_source, sizeof(extensions_source), extensions_point,\n"
     "+\t    sizeof(extensions_point), \"/System/Library/Extensions/AGXMetalA10.bundle\",\n"
