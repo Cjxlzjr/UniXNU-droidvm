@@ -114,12 +114,16 @@ def recount_hunks(text: str) -> str:
         old_count = new_count = 0
         while j < len(lines) and not lines[j].startswith(('@@ ', 'diff --git ')):
             h = lines[j]
-            # A raw blank line separates files/hunks; empty diff content is prefixed by space or +.
-            if not h.strip():
-                if h.startswith((' ', '+', '-')):
-                    pass
-                else:
+            # This pinned upstream patch also contains one unprefixed blank
+            # context line inside a hunk; count it as old+new if needed.
+            # A trailing separator after the expected old lines is not context.
+            if not h.strip() and not h.startswith((' ', '+', '-')):
+                if old_count >= int(match['old_count'] or '1'):
                     break
+                old_count += 1
+                new_count += 1
+                j += 1
+                continue
             if h.startswith((' ', '-')) and not h.startswith(('--- ',)):
                 old_count += 1
             if h.startswith((' ', '+')) and not h.startswith(('+++ ',)):
