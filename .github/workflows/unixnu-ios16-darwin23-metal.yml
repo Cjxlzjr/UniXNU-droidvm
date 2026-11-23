@@ -42,7 +42,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py device/scripts/hostsim_watchdog_patch.py
+          python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py device/scripts/hostsim_watchdog_patch.py device/ios16/ci33-extension-overlay.py
+          python3 device/ios16/ci33-extension-overlay.py selftest
           python3 device/ios16/metal-experiment.py selftest
           python3 device/ios16/metal-trust.py --selftest
           python3 device/ios16/host_check_integration.py
@@ -86,6 +87,14 @@ jobs:
           mkdir -p diagnostics
           python3 device/ios16/build-darwin23.py configure --gpu-stage "$GPU_STAGE" --unixnu UniXNU --output "$BUILD_DIR" --efi-dir "$EFI_DIR" 2>&1 | tee diagnostics/configure.log
           python3 device/ios16/check-mach-inherited-ports.py "$BUILD_DIR/droidvm/tree/refer/xnu" 2>&1 | tee diagnostics/mach-inherited-ports.log
+          if [[ "$GPU_STAGE" == metal ]]; then
+            patch="$BUILD_DIR/droidvm/tree/patches/xnu/zzy-native-gpu-addon-mount.patch"
+            test -f "$patch"
+            grep -q 'native_gpu_addon_ext_post_owner' "$patch"
+            grep -q 'native_gpu_addon_ext_pre_a11' "$patch"
+            grep -q 'native_gpu_addon_ext_selected_lower' "$patch"
+            cp "$patch" diagnostics/ci33-extensions-applied.patch
+          fi
       - name: Build iOS16 kernel, Data seed and optional signed Metal plugin
         shell: bash
         env:
