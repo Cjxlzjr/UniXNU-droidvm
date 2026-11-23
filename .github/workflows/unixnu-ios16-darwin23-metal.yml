@@ -2,7 +2,7 @@ name: UniXNU iOS 16 Darwin 23 Metal experiment
 
 on:
   push:
-    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel]
+    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33]
   workflow_dispatch:
     inputs:
       gpu_stage:
