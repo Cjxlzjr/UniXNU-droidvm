@@ -28,7 +28,8 @@ extension_overlay = runpy.run_path(str(IOS / 'ci33-extension-overlay.py'))
 EXTENSION_PATCH = extension_overlay['TARGET']
 SWAP_BOOT_ARG = 'droidvm-ios16-swap=1'
 SWAP_SYMBOLS = {'_native_ios16_swap_converted', '_native_ios16_swap_rejected', '_native_ios16_swap_unmapped',
-                '_native_ios16_swap_reject_masks_ready', '_native_ios16_swap_reject_masks'}
+                '_native_ios16_swap_reject_masks_ready', '_native_ios16_swap_reject_masks',
+                '_native_ios16_swap_surface_diag'}
 CORE_REVISION = 'dba62c1ca53cd04c25b0e501afff31d5ffe2e20e'
 KERNEL_DONOR = 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7'
 TRUST_SHA256 = '2d97b2a4e114c7303f5521814b8ae67bb85c66e4628fefbb13fe38a3fdba555d'
@@ -359,6 +360,14 @@ class HybridBuild(base.Build):
         # build results in the same CI attempt. Never stage an unverified plugin.
         self.script('build-turnip-darwin.py', '--target', 'ios', logfile=self.logs / 'turnip-ios.log')
         self.script('build-turnip-darwin.py', '--target', 'host', logfile=self.logs / 'turnip-host.log')
+        # Only the host smoke test should see host Homebrew headers.
+        host_checker = self.tree / 'scripts/check-turnip-darwin-host.py'
+        prefix = subprocess.check_output(['brew', '--prefix'], env=self.env, text=True).strip()
+        host_include = str(Path(prefix) / 'include')
+        if host_include != '/opt/homebrew/include':
+            original_host_checker = host_checker.read_text()
+            host_checker.write_text(original_host_checker.replace(
+                "'/opt/homebrew/include'", repr(host_include)))
         host_status = self.script('check-turnip-darwin-host.py',
                                   logfile=self.logs / 'turnip-host-check.log', check=False)
         failed = sorted(p.stem for p in (self.tree / 'build/turnip-darwin-host').glob('*.log')

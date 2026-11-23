@@ -2,7 +2,7 @@ name: UniXNU iOS 16 Darwin 23 Metal experiment
 
 on:
   push:
-    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33, experiment/ios16-darwin23-metal-ci34]
+    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33, experiment/ios16-darwin23-metal-ci34, experiment/ios16-darwin23-metal-ci51-intel26, experiment/ios16-darwin23-metal-ci51-intel15]
   workflow_dispatch:
     inputs:
       gpu_stage:
@@ -27,8 +27,23 @@ env:
   GPU_STAGE: ${{ inputs.gpu_stage || 'metal' }}
 
 jobs:
+  source-preflight:
+    if: github.ref_name == 'experiment/ios16-darwin23-metal-ci51-intel26'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check portable iOS 16 diagnostic sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror ios16/test-ios16-swap-record.cpp -o "$RUNNER_TEMP/test-ios16-swap-record"
+          "$RUNNER_TEMP/test-ios16-swap-record"
+          python3 -m py_compile ios16/build-darwin23.py ios16/metal-experiment.py
   build:
-    runs-on: ${{ github.ref_name == 'experiment/ios16-darwin23-metal-ci34' && 'macos-26' || 'xcode-27' }}
+    runs-on: ${{ github.ref_name == 'experiment/ios16-darwin23-metal-ci51-intel26' && 'macos-26-intel' || github.ref_name == 'experiment/ios16-darwin23-metal-ci51-intel15' && 'macos-15-intel' || github.ref_name == 'experiment/ios16-darwin23-metal-ci34' && 'macos-26' || 'xcode-27' }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -38,14 +53,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Select Xcode 26.3 on macOS 15 Intel
+        if: github.ref_name == 'experiment/ios16-darwin23-metal-ci51-intel15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          developer_dir=/Applications/Xcode_26.3.app/Contents/Developer
+          test -d "$developer_dir"
+          sudo xcode-select --switch "$developer_dir"
       - name: Validate isolated experiment scripts
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
+          host_arch=arm64
+          case "$GITHUB_REF_NAME" in
+            experiment/ios16-darwin23-metal-ci51-intel26|experiment/ios16-darwin23-metal-ci51-intel15) host_arch=x86_64 ;;
+          esac
+          test "$(uname -m)" = "$host_arch"
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-path
-          xcrun --sdk iphoneos --show-sdk-path
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          printf '%s\n' 'int ios16_runner_probe(void) { return 16; }' | \
+            xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$iphoneos_sdk" \
+              -x c -c - -o "$RUNNER_TEMP/ios16-runner-probe.o"
+          xcrun lipo -verify_arch arm64 "$RUNNER_TEMP/ios16-runner-probe.o"
           python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py device/scripts/hostsim_watchdog_patch.py device/ios16/ci33-extension-overlay.py
           python3 device/ios16/ci33-extension-overlay.py selftest
           python3 device/ios16/metal-experiment.py selftest
@@ -60,8 +91,9 @@ jobs:
         run: |
           set -euo pipefail
           brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang vulkan-headers shaderc spirv-tools
-          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
-          echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          brew_include="$(brew --prefix)/include"
           command -v glslc || {
             echo '::error::Missing glslc from shaderc, required by the Turnip host smoke test'; exit 1;
           }
@@ -72,12 +104,11 @@ jobs:
           printf '%s\n' '#version 450' 'void main() { gl_Position = vec4(0.0); }' | \
             glslc -fshader-stage=vert - -o "$RUNNER_TEMP/ios16-ci.spv"
           spirv-val "$RUNNER_TEMP/ios16-ci.spv"
-          # check-turnip-darwin-host.py compiles vulkan_smoke.c with -I /opt/homebrew/include.
-          test -f /opt/homebrew/include/vulkan/vulkan.h || {
+          test -f "$brew_include/vulkan/vulkan.h" || {
             echo '::error::Missing Vulkan headers required by Turnip host smoke test'; exit 1;
           }
           printf '%s\n' '#include <vulkan/vulkan.h>' | \
-            xcrun clang -I /opt/homebrew/include -Werror -x c -fsyntax-only -
+            xcrun clang -I "$brew_include" -Werror -x c -fsyntax-only -
           if [[ "$GPU_STAGE" == metal ]]; then
             command -v rustup || { echo '::error::rustup missing on macOS runner'; exit 1; }
             rustup toolchain install 1.98.0 --profile minimal
