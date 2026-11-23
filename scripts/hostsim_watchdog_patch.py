@@ -88,6 +88,25 @@ def patch_watchdog(source: bytes) -> str:
                        "progress store")
     text = replace_one(text, "unsigned(w.lastMark)", "__atomic_load_n(&w.lastMark, __ATOMIC_RELAXED)",
                        "progress sample")
+    # The iOS build keeps the original ARM64 registers; the Intel simulator
+    # samples the native x86_64 thread using the same watchdog deadlines.
+    arm_state = """    arm_thread_state64_t state = {};
+    count = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(thread, ARM_THREAD_STATE64, reinterpret_cast<thread_state_t>(&state), &count) == KERN_SUCCESS) {
+        const uint64_t pc = arm_thread_state64_get_pc(state), lr = arm_thread_state64_get_lr(state);
+        uint64_t fp = arm_thread_state64_get_fp(state);"""
+    intel_state = """#if defined(__x86_64__)
+    x86_thread_state64_t state = {};
+    count = x86_THREAD_STATE64_COUNT;
+    if (thread_get_state(thread, x86_THREAD_STATE64, reinterpret_cast<thread_state_t>(&state), &count) == KERN_SUCCESS) {
+        const uint64_t pc = state.__rip, lr = 0;
+        uint64_t fp = state.__rbp;
+#else
+"""
+    text = replace_one(text, arm_state, intel_state + arm_state + "\n#endif", "native thread state")
+    lr_frame = "        if (at < size) at += frameText(text + at, size - at, lr);"
+    text = replace_one(text, lr_frame, "#if !defined(__x86_64__)\n" + lr_frame + "\n#endif",
+                       "ARM64 link register frame")
     return replace_one(
         text,
         """    unsigned next = 0;
