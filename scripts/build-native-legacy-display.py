@@ -226,10 +226,11 @@ def code(data,info):
     sec=next(s for g in info['segments'] for s in g['sections'] if s['name']=='__text');return data[sec['fileoff']:sec['fileoff']+sec['size']]
 require(code(raw,image)==code(late.read_bytes(),macho(late.read_bytes())),'Only owned initializer section registration changes')
 r=json.loads((ROOT/'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
-cmd=[];args=r['arguments'];i=0;source=ROOT/'kits/droidvm/LegacyDisplayProbe.cpp'
+cmd=[];args=r['arguments'];i=0
+legacy_probe_source=ROOT/'kits/droidvm/LegacyDisplayProbe.cpp'
 while i<len(args):
     value=args[i]
-    if value==r['file']:cmd.append(str(source))
+    if value==r['file']:cmd.append(str(legacy_probe_source))
     elif value=='-o':cmd+=['-o',str(OUT/'LegacyDisplayProbe.o')];i+=1
     elif value=='-Xclang' and args[i+1].startswith('-W'):i+=1
     elif not value.startswith('-W'):cmd.append(value)
@@ -242,16 +243,16 @@ virtio_gpu_objects=[]
 for gpu_source in virtio_gpu_sources:
     gpu_obj=OUT/(gpu_source.stem+'.o')
     # The virtio-gpu 3D methods' ABI (DroidVMVirtgpuABI.h) is NativeAdreno's, whose user client carries them.
-    run([str(gpu_source) if arg==str(source) else str(gpu_obj) if arg==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+
+    run([str(gpu_source) if arg==str(legacy_probe_source) else str(gpu_obj) if arg==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]+
         ['-I',str(ROOT/'drivers/Adreno740')],cwd=r['directory'])
     virtio_gpu_objects.append(gpu_obj)
 hid_source=ROOT/'kits/droidvm/HidInputProbe.cpp'
 hid_obj=OUT/'HidInputProbe.o'
-hid_cmd=[str(hid_source) if str(arg)==str(source) else str(hid_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
+hid_cmd=[str(hid_source) if str(arg)==str(legacy_probe_source) else str(hid_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
 run(hid_cmd,cwd=r['directory'])
 keystore_source=ROOT/'kits/droidvm/KeyStoreProbe.cpp'
 keystore_obj=OUT/'KeyStoreProbe.o'
-keystore_cmd=[str(keystore_source) if str(arg)==str(source) else str(keystore_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
+keystore_cmd=[str(keystore_source) if str(arg)==str(legacy_probe_source) else str(keystore_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd]
 run(keystore_cmd,cwd=r['directory'])
 process_source=ROOT/'kits/droidvm/BootProcessProbe.c'
 process_obj=OUT/'BootProcessProbe.o'
@@ -506,7 +507,8 @@ run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDispla
      hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,stub_obj,policy_obj,clock_obj,export_obj,store_obj,input_obj,motion_obj,bootargs_obj,net_obj,netif_obj,snd_obj,media_obj,
      audio_late,battery_late,ethernet_late,*ionet_objects,*gpu_objects,*virtio_gpu_objects])
 sources=[ROOT/'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
-         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,source.with_name('Ios16SwapRecord.h'),hid_source,keystore_source,process_source,trace_source,ROOT/'kits/droidvm/BootUiTraceCore.h',ROOT/'kits/droidvm/BootUiTraceDetails.h',
+         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',legacy_probe_source,legacy_probe_source.with_name('Ios16SwapRecord.h'),
+         hid_source,keystore_source,process_source,trace_source,ROOT/'kits/droidvm/BootUiTraceCore.h',ROOT/'kits/droidvm/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
          ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',stub_source,policy_source,clock_source,export_source,store_source,input_source,motion_source,bootargs_source,net_source,netif_source,snd_source,media_source,audio_source,battery_source,
          ethernet_source,*ionet_sources,*gpu_sources,*virtio_gpu_sources,ROOT/'kits/droidvm/DroidVMVirtioGpu.h']
