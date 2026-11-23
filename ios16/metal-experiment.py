@@ -11,11 +11,6 @@ import plistlib
 import struct
 
 PATCHES = {
-    "patches/xnu/zzy-native-gpu-addon-mount.patch": [
-        # The original lower-layer bundle in the pinned iPhone10,3 OS volume.
-        ('"/System/Library/Extensions/AGXMetalA10.bundle"',
-         '"/System/Library/Extensions/AGXMetalA11.bundle"'),
-    ],
     "drivers/AdrenoMetal/NativeBridgeMetalFrontend.mm": [
         # The iPhone10,3 20H392 ARM64 dyld cache records this class_ro_t instanceSize.
         (" // The target's base class ABI (iPadOS 17.7.11, 536 bytes): the dynamic subclass adds no instance variables and reads none of the base's,\n"

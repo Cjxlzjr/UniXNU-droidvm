@@ -15,6 +15,7 @@
 #include <mach/kmod.h>
 #include <machine/machine_routines.h>
 #include "DroidVMVirtioGpu.h"
+#include "Ios16SwapRecord.h"
 // As a kext of the collection (ipados27/kexts/DroidVMGraphics.json, compiled with DROIDVM_NATIVE_KEXT=1), with the GPU: the
 // display's classes register as the kext loads, after IOMobileGraphicsFamily; the kext's starter runs both probes below once IOBSD
 // is published, and the kernel keeps the rest of the late probe (DroidVMLateProbe.cpp).
@@ -357,13 +358,47 @@ struct ClientStat {
 static ClientStat seenClients[kSeenClients];static unsigned seenClientCount;
 typedef IOReturn (*ExternalFn)(IOUserClient *,uint32_t,IOExternalMethodArguments *,IOExternalMethodDispatch *,OSObject *,void *);
 typedef IOReturn (*RegisterFn)(IOUserClient *,mach_port_t,UInt32,UInt32);
+extern "C" {
+uint32_t native_ios16_swap_converted;
+uint32_t native_ios16_swap_rejected;
+uint32_t native_ios16_swap_unmapped;
+}
+
+static IOReturn forwardExternal(ExternalFn original, IOUserClient *client, uint32_t selector,
+                                IOExternalMethodArguments *args, IOExternalMethodDispatch *dispatch,
+                                OSObject *target, void *ref) {
+    using namespace droidvm_ios16_swap;
+    unsigned enabled = 0;
+    if (selector != kSelector || !args || args->structureInputSize != kIos16Size
+        || !args->structureInput || args->structureInputDescriptor || args->asyncWakePort
+        || args->scalarInputCount || args->scalarOutputCount || args->structureOutputSize
+        || args->structureOutputDescriptor
+        || !PE_parse_boot_argn("droidvm-ios16-swap", &enabled, sizeof(enabled)) || enabled != 1) {
+        return original(client, selector, args, dispatch, target, ref);
+    }
+    alignas(16) unsigned char input[kDarwin23Size];
+    const auto &source = *static_cast<const unsigned char (*)[kIos16Size]>(args->structureInput);
+    const size_t unmapped = translate(source, input);
+    if (unmapped) {
+        __atomic_store_n(&native_ios16_swap_unmapped, static_cast<uint32_t>(unmapped), __ATOMIC_RELAXED);
+        __atomic_add_fetch(&native_ios16_swap_rejected, 1, __ATOMIC_RELAXED);
+        return kIOReturnBadArgument;
+    }
+    IOExternalMethodArguments converted = *args;
+    converted.structureInput = input;
+    converted.structureInputSize = sizeof(input);
+    __atomic_add_fetch(&native_ios16_swap_converted, 1, __ATOMIC_RELAXED);
+    // Keep the original synchronous dispatch, entitlement and argument checks.
+    return original(client, selector, &converted, dispatch, target, ref);
+}
+
 static ClientStat *statFor(IOUserClient *client) {
     for(unsigned i=0;i<seenClientCount;++i)if(seenClients[i].object==(uintptr_t)client)return &seenClients[i];
     return nullptr;
 }
 static IOReturn wrappedExternal(IOUserClient *client,uint32_t selector,IOExternalMethodArguments *args,IOExternalMethodDispatch *dispatch,OSObject *target,void *ref) {
     ClientStat *stat=statFor(client);
-    IOReturn status=stat?reinterpret_cast<ExternalFn>(stat->original_external)(client,selector,args,dispatch,target,ref):kIOReturnNotAttached;
+    IOReturn status=stat?forwardExternal(reinterpret_cast<ExternalFn>(stat->original_external),client,selector,args,dispatch,target,ref):kIOReturnNotAttached;
     if(stat) {
         if(selector==6 && args && args->scalarInput && args->scalarInputCount>=3) {
             const uint64_t *in=args->scalarInput;
@@ -418,6 +453,12 @@ extern "C" unsigned native_legacy_state_words(char *out,unsigned cap) {
 }
 extern "C" unsigned native_legacy_clients_dump(char *out,unsigned cap) {
     unsigned at=0;out[0]=0;
+    if (cap >= 112) {
+        at += snprintf(out, cap, "ios16_swap converted=%u rejected=%u unmapped_offset_plus_one=%u\n",
+                       __atomic_load_n(&native_ios16_swap_converted, __ATOMIC_RELAXED),
+                       __atomic_load_n(&native_ios16_swap_rejected, __ATOMIC_RELAXED),
+                       __atomic_load_n(&native_ios16_swap_unmapped, __ATOMIC_RELAXED));
+    }
     for(unsigned c=0;c<seenClientCount && at+120<cap;++c) {
         const ClientStat &s=seenClients[c];
         at+=snprintf(out+at,cap-at,"C%u pid=%d calls=%u fails=%u regs=%u",c,s.pid,s.calls,s.fails,s.regs);

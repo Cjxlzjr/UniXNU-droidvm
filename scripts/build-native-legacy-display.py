@@ -506,7 +506,7 @@ run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDispla
      hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,stub_obj,policy_obj,clock_obj,export_obj,store_obj,input_obj,motion_obj,bootargs_obj,net_obj,netif_obj,snd_obj,media_obj,
      audio_late,battery_late,ethernet_late,*ionet_objects,*gpu_objects,*virtio_gpu_objects])
 sources=[ROOT/'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
-         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,hid_source,keystore_source,process_source,trace_source,ROOT/'kits/droidvm/BootUiTraceCore.h',ROOT/'kits/droidvm/BootUiTraceDetails.h',
+         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,source.with_name('Ios16SwapRecord.h'),hid_source,keystore_source,process_source,trace_source,ROOT/'kits/droidvm/BootUiTraceCore.h',ROOT/'kits/droidvm/BootUiTraceDetails.h',
          ROOT/'drivers/NativeHidInput/NativeHidInput.cpp',ROOT/'scripts/build-native-hid-input.py',
          ROOT/'drivers/NativeKeyStoreEvents/NativeKeyStoreEvents.cpp',stub_source,policy_source,clock_source,export_source,store_source,input_source,motion_source,bootargs_source,net_source,netif_source,snd_source,media_source,audio_source,battery_source,
          ethernet_source,*ionet_sources,*gpu_sources,*virtio_gpu_sources,ROOT/'kits/droidvm/DroidVMVirtioGpu.h']

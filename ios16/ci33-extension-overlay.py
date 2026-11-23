@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""CI33: strictly patch the generated XNU GPU-addon overlay for iOS16 diagnostics.
+"""Patch and verify the iOS 16 Metal experiment's generated XNU overlay.
 
-Runs *after* ios16/metal-experiment.py patch. Changes only the generated core
-patch, not the pinned upstream repo. Recalculates unified-diff hunk positions.
+Apply after the Core patch set is copied to the device staging directory.
+Recalculate unified-diff hunk positions and check the linked kernel separately.
 """
 from __future__ import annotations
 import argparse
@@ -14,7 +14,7 @@ TARGET = Path("patches/xnu/zzy-native-gpu-addon-mount.patch")
 INSERT_BEFORE = "+static void\n+native_gpu_addon_prepare(proc_t p, user_addr_t scratch)\n"
 OLD_CALL = (
     "+\tnative_gpu_addon_mount(p, scratch, 0x400, extensions_source, sizeof(extensions_source), extensions_point,\n"
-    "+\t    sizeof(extensions_point), \"/System/Library/Extensions/AGXMetalA11.bundle\",\n"
+    "+\t    sizeof(extensions_point), \"/System/Library/Extensions/AGXMetalA10.bundle\",\n"
     "+\t    \"/System/Library/Extensions/NativeAdrenoMetal.bundle/Info.plist\", &native_gpu_addon_stage,\n"
     "+\t    &native_gpu_addon_status);\n"
 )
@@ -23,6 +23,11 @@ PATH_COUNTER = "/System/Library/Extensions/AGXGPURawCounterBundle.bundle"
 PATH_GL = "/System/Library/Extensions/AppleMetalGLRenderer.bundle"
 PATH_OWNER = "/System/Library/Extensions/NativeAdrenoMetal.bundle/Info.plist"
 PATH_OWNER_SOURCE = "/private/var/ngpu/addons/NativeAdrenoMetal.bundle/Info.plist"
+PATH_A10 = "/System/Library/Extensions/AGXMetalA10.bundle"
+PROBES = {f'native_gpu_addon_ext_{suffix}' for suffix in (
+    'pre_dir', 'pre_a11', 'pre_counter', 'pre_gl', 'pre_owner_source',
+    'post_dir', 'post_a11', 'post_counter', 'post_gl', 'post_owner', 'selected_lower',
+)}
 
 GLOBS = r"""
 /* CI33 iOS16: distinguish source availability from union-mount name lookup.
@@ -114,8 +119,8 @@ def recount_hunks(text: str) -> str:
         old_count = new_count = 0
         while j < len(lines) and not lines[j].startswith(('@@ ', 'diff --git ')):
             h = lines[j]
-            # This pinned upstream patch also contains one unprefixed blank
-            # context line inside a hunk; count it as old+new if needed.
+            # The pinned upstream patch has unprefixed blank lines inside
+            # hunks. Count and emit them as explicit context.
             # A trailing separator after the expected old lines is not context.
             if not h.strip() and not h.startswith((' ', '+', '-')):
                 if old_count >= int(match['old_count'] or '1'):
@@ -141,7 +146,7 @@ def recount_hunks(text: str) -> str:
             raise ValueError(f"Unexpected old hunk length at {old_start}: {old_count} != {orig_old}")
         shifts[current] += new_count - orig_new
         output.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{match['tail']}\n")
-        output.extend(lines[i + 1:j])
+        output.extend(' \n' if line == '\n' else line for line in lines[i + 1:j])
         i = j
         count += 1
     if not count:
@@ -164,6 +169,15 @@ def apply(text: str) -> str:
         if value not in updated:
             raise ValueError(f'CI33 patch missing {value}')
     return updated
+
+
+def verify_kernel(image: Path, defined: set[str]) -> None:
+    missing = PROBES - {name.lstrip('_') for name in defined}
+    if missing:
+        raise ValueError(f'{image}: missing iOS 16 Extensions probe definitions: {", ".join(sorted(missing))}')
+    raw = image.read_bytes()
+    if PATH_A11.encode() + b'\0' not in raw or PATH_A10.encode() + b'\0' in raw:
+        raise ValueError(f'{image}: wrong original GPU bundle path for the iOS 16 overlay')
 
 
 def selftest() -> None:
@@ -191,6 +205,17 @@ def selftest() -> None:
         p = Path(td) / 'fixture.patch'
         p.write_text(fixed)
         assert p.read_text() == fixed
+        kernel = Path(td) / 'kernel.macho'
+        kernel.write_bytes(PATH_A11.encode() + b'\0')
+        verify_kernel(kernel, PROBES)
+        for path, names in ((PATH_A10, PROBES), (PATH_A11, PROBES - {'native_gpu_addon_ext_pre_a11'})):
+            kernel.write_bytes(path.encode() + b'\0')
+            try:
+                verify_kernel(kernel, names)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('Accepted a kernel with a stale path or missing probe')
     print('PASS: unified-diff hunk recount, runtime probes and safe fallback anchors')
 
 
@@ -208,7 +233,7 @@ def main() -> None:
     original = path.read_text()
     changed = apply(original)
     if changed != original:
-        path.write_text(changed)
+        path.write_text(changed, newline='\n')
     print(f'CI33 Extensions diagnostics: {path}: {"updated" if changed != original else "already patched"}')
 
 

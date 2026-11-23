@@ -2,7 +2,7 @@ name: UniXNU iOS 16 Darwin 23 Metal experiment
 
 on:
   push:
-    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33]
+    branches: [experiment/ios16-darwin23-metal, experiment/ios16-darwin23-metal-4-parallel, experiment/ios16-darwin23-metal-ci33, experiment/ios16-darwin23-metal-ci34]
   workflow_dispatch:
     inputs:
       gpu_stage:
@@ -48,26 +48,39 @@ jobs:
           python3 device/ios16/metal-trust.py --selftest
           python3 device/ios16/host_check_integration.py
           python3 device/scripts/hostsim_watchdog_patch.py --selftest
+          xcrun clang++ -std=c++17 -Wall -Wextra -Werror device/ios16/test-ios16-swap-record.cpp -o "$RUNNER_TEMP/test-ios16-swap-record"
+          "$RUNNER_TEMP/test-ios16-swap-record"
           test "$GPU_STAGE" = metal -o "$GPU_STAGE" = 3d
       - name: Install pinned build toolchain
         shell: bash
         run: |
           set -euo pipefail
-          brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang vulkan-headers shaderc
+          brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang vulkan-headers shaderc spirv-tools
           echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
           echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
           command -v glslc || {
             echo '::error::Missing glslc from shaderc, required by the Turnip host smoke test'; exit 1;
           }
           glslc --version
+          command -v spirv-val || {
+            echo '::error::Missing spirv-val from spirv-tools'; exit 1;
+          }
+          printf '%s\n' '#version 450' 'void main() { gl_Position = vec4(0.0); }' | \
+            glslc -fshader-stage=vert - -o "$RUNNER_TEMP/ios16-ci.spv"
+          spirv-val "$RUNNER_TEMP/ios16-ci.spv"
           # check-turnip-darwin-host.py compiles vulkan_smoke.c with -I /opt/homebrew/include.
           test -f /opt/homebrew/include/vulkan/vulkan.h || {
             echo '::error::Missing Vulkan headers required by Turnip host smoke test'; exit 1;
           }
+          printf '%s\n' '#include <vulkan/vulkan.h>' | \
+            xcrun clang -I /opt/homebrew/include -Werror -x c -fsyntax-only -
           if [[ "$GPU_STAGE" == metal ]]; then
             command -v rustup || { echo '::error::rustup missing on xcode-27 runner'; exit 1; }
             rustup toolchain install 1.98.0 --profile minimal
             rustup target add aarch64-apple-ios --toolchain 1.98.0
+            printf '%s\n' '#![no_std]' 'pub fn probe() -> u32 { core::mem::size_of::<u64>() as u32 }' | \
+              IPHONEOS_DEPLOYMENT_TARGET=16.0 rustc +1.98.0 --crate-name ios16_ci_probe --crate-type lib \
+                --target aarch64-apple-ios --emit=obj -o "$RUNNER_TEMP/ios16-ci.o" -
           fi
           git clone --filter=blob:none --branch wip/hackintosh https://github.com/Droid-VM/UniXNU.git UniXNU
           git -C UniXNU checkout --detach "$CORE_REVISION"

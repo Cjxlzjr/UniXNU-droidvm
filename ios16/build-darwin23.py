@@ -24,6 +24,10 @@ IOS = DEVICE / 'ios16'
 spec = importlib.util.spec_from_file_location('droidvm_build', DEVICE / 'scripts/build-droidvm-all.py')
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
+extension_overlay = runpy.run_path(str(IOS / 'ci33-extension-overlay.py'))
+EXTENSION_PATCH = extension_overlay['TARGET']
+SWAP_BOOT_ARG = 'droidvm-ios16-swap=1'
+SWAP_SYMBOLS = {'_native_ios16_swap_converted', '_native_ios16_swap_rejected', '_native_ios16_swap_unmapped'}
 CORE_REVISION = 'dba62c1ca53cd04c25b0e501afff31d5ffe2e20e'
 KERNEL_DONOR = 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7'
 TRUST_SHA256 = '2d97b2a4e114c7303f5521814b8ae67bb85c66e4628fefbb13fe38a3fdba555d'
@@ -84,6 +88,8 @@ def derived_board(text, gpu_stage='off'):
         f'sheng-gpu-addon={int(gpu_stage == "metal")}',
         f'vgpu-selftest={int(gpu_stage != "off")}',
     ]
+    if gpu_stage == 'metal':
+        args.insert(0, SWAP_BOOT_ARG)
     tool_args = original['payload']['adt']['tool_args'] + ['--identity-tree', 'build/iphone-x-identity.im4p']
     for key, value in (
         ('fetch', '["KernelCache"]'),
@@ -125,12 +131,23 @@ def verify_kernel_volume_ids(image):
 
 
 def verify_kernel_mach_ports(image):
-    table = subprocess.check_output(['llvm-nm', '--defined-only', image], text=True)
-    names = {line.split()[-1] for line in table.splitlines() if line.strip()}
+    names = defined_kernel_symbols(image)
     for call in ('mach_ports_register', 'mach_ports_lookup'):
         if {f'_{call}', f'__X{call}'} - names or f'__X_kernelrpc_{call}3' in names:
             raise ValueError(f'The linked task MIG server does not implement the iOS 16 {call} RPC')
     base.log('Verified the linked iOS 16 Mach inherited-port MIG handlers')
+
+
+def defined_kernel_symbols(image):
+    table = subprocess.check_output(['llvm-nm', '--defined-only', image], text=True)
+    return {line.split()[-1] for line in table.splitlines() if line.strip()}
+
+
+def verify_metal_kernel(image):
+    names = defined_kernel_symbols(image)
+    extension_overlay['verify_kernel'](image, names)
+    if missing := SWAP_SYMBOLS - names:
+        raise ValueError(f'The Metal kernel is missing iOS 16 swap telemetry: {sorted(missing)}')
 
 
 def stage_device(core, directory, gpu_stage='off'):
@@ -147,6 +164,10 @@ def stage_device(core, directory, gpu_stage='off'):
     defconfig.write_text('\n'.join(lines) + '\n')
     patches = directory / 'patches/xnu'
     shutil.copytree(core / 'patches/xnu', patches, dirs_exist_ok=True)
+    if gpu_stage == 'metal':
+        overlay = directory / EXTENSION_PATCH
+        overlay.write_text(extension_overlay['apply'](overlay.read_text()), newline='\n')
+        base.log(f'Staged iOS 16 Extensions overlay at {overlay}')
     shutil.copyfile(PORT_PATCH, patches / PORT_PATCH.name)
     old_uuids = [(IPAD_OS_UUID, PINS['os']['uuid']), (IPAD_SYSTEMOS_UUID, PINS['systemos']['uuid'])]
     for file in ('offline-owner-cache-carrier.patch', 'offline-owner-systemos-mount.patch'):
@@ -196,8 +217,6 @@ class HybridBuild(base.Build):
         self.unixnu_cmd('tree', logfile=self.logs / 'tree.log')
         if self.gpu_stage == 'metal':
             self.patch_metal_deployment('ios16-metal-configure-patch.log')
-            base.run([sys.executable, IOS / 'ci33-extension-overlay.py', 'patch', self.tree],
-                     env=self.env, logfile=self.logs / 'ios16-ci33-extensions-patch.log')
         if (self.tree / 'patches/xnu').resolve() != (self.device / 'patches/xnu').resolve():
             raise ValueError('The resolved tree did not select the hybrid UUID patches')
         for name, pin in EFI_PINS.items():
@@ -289,8 +308,15 @@ class HybridBuild(base.Build):
         self.unixnu_cmd('ipsw', 'fetch', 'KernelCache', logfile=self.logs / 'kernel-donor.log')
         self.run_step('reference', self.step_reference)
         self.small_iphone_members()
+        kernel_step = 'kernel'
+        if self.gpu_stage == 'metal':
+            kernel_inputs = (EXTENSION_PATCH, 'package/Ios16SwapRecord.h', 'package/LegacyDisplayProbe.cpp')
+            revision = hashlib.sha256()
+            for source in kernel_inputs:
+                revision.update(bytes.fromhex(base.sha256(self.device / source)))
+            kernel_step = f'kernel-ios16-metal-{revision.hexdigest()[:16]}'
         for step, method in [('volumes', self.step_volumes), ('policies', self.step_policies),
-                             ('data-base', self.step_data_base), ('kernel', self.step_kernel)]:
+                             ('data-base', self.step_data_base), (kernel_step, self.step_kernel)]:
             self.run_step(step, method)
         self.verify_kernel()
         if self.gpu_stage == 'metal':
@@ -487,6 +513,8 @@ class HybridBuild(base.Build):
             raise ValueError('Kernel does not match its prelink record and the audited donor')
         verify_kernel_volume_ids(image)
         verify_kernel_mach_ports(image)
+        if self.gpu_stage == 'metal':
+            verify_metal_kernel(image)
 
     def step_payload(self):
         self.verify_kernel()
@@ -543,6 +571,8 @@ class HybridBuild(base.Build):
             }.items():
                 if base.sha256(stage / name) != expected:
                     raise ValueError(f'FAT member {name} differs from its verified source')
+            if self.gpu_stage == 'metal':
+                verify_metal_kernel(stage / 'kernel.macho')
             record = json.loads((self.work / 'payload/payload.json').read_text())
             adt = stage / 'kernel.macho.adt'
             if base.sha256(adt) != record['adt_sha256']:
@@ -558,6 +588,8 @@ class HybridBuild(base.Build):
             boot = next(entry for entry in config['entry'] if entry['id'] == config['boot']['default'])
             if config['driver'] != [{'path': 'Payloads/DarwinBoot.efi'}] or boot['path'] != 'Payloads/kernel.macho':
                 raise ValueError('The finished FAT does not boot through the checked EFI and kernel')
+            if self.gpu_stage == 'metal' and SWAP_BOOT_ARG not in boot['args'].split():
+                raise ValueError('The finished Metal FAT does not enable the iOS 16 SwapEnd adapter')
             return {name: {'bytes': (stage / name).stat().st_size, 'sha256': base.sha256(stage / name)} for name in paths}
 
 
