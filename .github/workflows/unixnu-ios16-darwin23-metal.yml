@@ -76,7 +76,7 @@ jobs:
           printf '%s\n' 'int ios16_runner_probe(void) { return 16; }' | \
             xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$iphoneos_sdk" \
               -x c -c - -o "$RUNNER_TEMP/ios16-runner-probe.o"
-          xcrun lipo -verify_arch arm64 "$RUNNER_TEMP/ios16-runner-probe.o"
+          xcrun lipo "$RUNNER_TEMP/ios16-runner-probe.o" -verify_arch arm64
           python3 -m py_compile device/ios16/build-darwin23.py device/ios16/metal-experiment.py device/ios16/metal-trust.py device/ios16/host_check_integration.py device/scripts/check-turnip-darwin-host.py device/scripts/hostsim_watchdog_patch.py device/ios16/ci33-extension-overlay.py
           python3 device/ios16/ci33-extension-overlay.py selftest
           python3 device/ios16/metal-experiment.py selftest
