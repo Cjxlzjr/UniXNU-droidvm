@@ -28,7 +28,9 @@ extension_overlay = runpy.run_path(str(IOS / 'ci33-extension-overlay.py'))
 EXTENSION_PATCH = extension_overlay['TARGET']
 SWAP_BOOT_ARG = 'droidvm-ios16-swap=1'
 SWAP_SYMBOLS = {'_native_ios16_swap_converted', '_native_ios16_swap_rejected', '_native_ios16_swap_unmapped',
-                '_native_ios16_swap_reject_masks_ready', '_native_ios16_swap_reject_masks'}
+                '_native_ios16_swap_reject_masks_ready', '_native_ios16_swap_reject_masks',
+                '_native_ios16_swap_surface_diag'}
+DEFAULT_SURFACE_SYMBOLS = {'_native_ios16_default_surface_id', '_native_ios16_default_surface_status'}
 CORE_REVISION = 'dba62c1ca53cd04c25b0e501afff31d5ffe2e20e'
 KERNEL_DONOR = 'f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7'
 TRUST_SHA256 = '2d97b2a4e114c7303f5521814b8ae67bb85c66e4628fefbb13fe38a3fdba555d'
@@ -149,6 +151,8 @@ def verify_metal_kernel(image):
     extension_overlay['verify_kernel'](image, names)
     if missing := SWAP_SYMBOLS - names:
         raise ValueError(f'The Metal kernel is missing iOS 16 swap telemetry: {sorted(missing)}')
+    if missing := DEFAULT_SURFACE_SYMBOLS - names:
+        raise ValueError(f'The Metal kernel is missing default surface telemetry: {sorted(missing)}')
 
 
 def stage_device(core, directory, gpu_stage='off'):

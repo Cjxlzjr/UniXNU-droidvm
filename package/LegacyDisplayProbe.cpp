@@ -5,7 +5,9 @@
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOUserClient.h>
+#include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSSerialize.h>
 #include <libkern/c++/OSData.h>
 #include <kern/task.h>
@@ -16,6 +18,78 @@
 #include <machine/machine_routines.h>
 #include "DroidVMVirtioGpu.h"
 #include "Ios16SwapRecord.h"
+
+#if DROIDVM_LEGACY_17
+extern "C" OSObject *native_legacy_surface_create(OSObject *, void *, OSDictionary *);
+extern "C" IOMemoryDescriptor *native_legacy_surface_descriptor(OSObject *);
+extern "C" uint64_t native_legacy_surface_width(OSObject *), native_legacy_surface_height(OSObject *);
+extern "C" uint64_t native_legacy_surface_stride(OSObject *), native_legacy_surface_allocation(OSObject *);
+extern "C" uint32_t native_legacy_surface_format(OSObject *), native_legacy_surface_planes(OSObject *);
+extern "C" uint32_t native_legacy_surface_id(OSObject *);
+
+extern "C" {
+volatile uint32_t native_ios16_default_surface_id;
+volatile IOReturn native_ios16_default_surface_status = kIOReturnNotReady;
+}
+
+// Back the original family's layer-0 default surface before it publishes the display.
+// The original selector 3 still exports a port for the calling task.
+extern "C" bool native_ios16_install_default_surface(OSObject *root, void *surfaceSlot,
+                                                     uint32_t width, uint32_t height) {
+    unsigned enabled = 0;
+    if (!PE_parse_boot_argn("droidvm-ios16-swap", &enabled, sizeof(enabled)) || enabled != 1)
+        return true;
+
+    OSObject *surface = nullptr;
+    memcpy(&surface, surfaceSlot, sizeof(surface));
+    const bool existing = surface != nullptr;
+    const uint64_t stride = (uint64_t{width} * 4 + 127) & ~uint64_t{127};
+    const uint64_t bytes = stride * height;
+    constexpr uint32_t bgra = 0x42475241;
+    if (width && height && width <= 16384 && height <= 16384 && root) {
+        if (!existing) {
+            // Use the same root factory as the original framebuffer. A
+            // nonzero allocation size makes it allocate the backing itself.
+            OSDictionary *properties = OSDictionary::withCapacity(6);
+            if (properties) {
+                const char *const keys[] = {"IOSurfaceWidth", "IOSurfaceHeight", "IOSurfaceBytesPerRow",
+                                            "IOSurfaceBytesPerElement", "IOSurfacePixelFormat", "IOSurfaceAllocSize"};
+                const uint64_t values[] = {width, height, stride, 4, bgra, bytes};
+                bool valid = true;
+                for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]) && valid; ++i) {
+                    OSNumber *value = OSNumber::withNumber(values[i], 64);
+                    valid = value && properties->setObject(keys[i], value);
+                    OSSafeReleaseNULL(value);
+                }
+                if (valid)
+                    surface = native_legacy_surface_create(root, nullptr, properties);
+                properties->release();
+            }
+        }
+        if (surface && surface->metaCast("IOSurface")) {
+            IOMemoryDescriptor *memory = native_legacy_surface_descriptor(surface);
+            const uint32_t id = native_legacy_surface_id(surface);
+            if (id && memory && memory->getLength() >= bytes &&
+                native_legacy_surface_allocation(surface) >= bytes &&
+                native_legacy_surface_width(surface) == width && native_legacy_surface_height(surface) == height &&
+                native_legacy_surface_stride(surface) == stride && native_legacy_surface_format(surface) == bgra &&
+                native_legacy_surface_planes(surface) == 0) {
+                // Transfer the factory's reference to the original stop path.
+                if (!existing)
+                    memcpy(surfaceSlot, &surface, sizeof(surface));
+                native_ios16_default_surface_id = id;
+                native_ios16_default_surface_status = kIOReturnSuccess;
+                return true;
+            }
+        }
+    }
+    if (!existing)
+        OSSafeReleaseNULL(surface);
+    native_ios16_default_surface_status = kIOReturnNoResources;
+    IOLog("droidvm-ios16: default framebuffer IOSurface unavailable (%ux%u)\n", width, height);
+    return false;
+}
+#endif
 // As a kext of the collection (ipados27/kexts/DroidVMGraphics.json, compiled with DROIDVM_NATIVE_KEXT=1), with the GPU: the
 // display's classes register as the kext loads, after IOMobileGraphicsFamily; the kext's starter runs both probes below once IOBSD
 // is published, and the kernel keeps the rest of the late probe (DroidVMLateProbe.cpp).

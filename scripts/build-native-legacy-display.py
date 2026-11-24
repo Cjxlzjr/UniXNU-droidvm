@@ -47,6 +47,7 @@ header='''// SPDX-License-Identifier: BSD-2-Clause-Patent
 #pragma once
 #include <IOKit/IOService.h>
 #include <libkern/libkern.h>
+extern "C" bool native_ios16_install_default_surface(OSObject *,void *,uint32_t,uint32_t);
 struct OriginalLegacySwapRequest;
 // Original state request (skip/requested and skip/powered word pairs, then the changed flag) taken by the state setter.
 struct OriginalLegacyStateRequest {uint32_t skipRequested,requested,skipPowered,powered;uint8_t changed;uint8_t pad[11];};
@@ -58,10 +59,17 @@ static constexpr unsigned kRequestRect0=17,kRequestRect1=81,kRequestMasks=792,kR
 // implements cancelSwapsAfterTimeout (NATIVE_LEGACY_CANCEL_SWAPS) instead of panicking when a swap misses 5 s.
 #define NATIVE_LEGACY_LEAVES(LEAF) LEAF(211) LEAF(245) LEAF(246) LEAF(306) LEAF(307) LEAF(338)
 #define NATIVE_LEGACY_CANCEL_SWAPS 1
+#define NATIVE_LEGACY_DEFAULT_SURFACE 1
 class IOMobileFramebufferLegacy : public IOService {
  OSDeclareAbstractStructors(IOMobileFramebufferLegacy)
  unsigned char originalPrivate[0x18a0-sizeof(IOService)];
 public:
+ bool installDefaultSurface(uint32_t width,uint32_t height) {
+  auto self=reinterpret_cast<unsigned char *>(this);
+  OSObject *root=nullptr;
+  memcpy(&root,self+0x1600,sizeof(root));
+  return native_ios16_install_default_surface(root,self+0x1618,width,height);
+ }
  // Both fields are qualified by the complete original slot-249 getter.
  // This modifies this object's own mode state, never a vtable or executable.
  void installBootDimensions(uint32_t width,uint32_t height) {
@@ -176,6 +184,23 @@ for name,address,field,wide in [
     expected=(0xf9400000 if wide else 0xb9400000)|((field//(8 if wide else 4))<<10)
     require(read(address,8)==struct.pack('<2I',expected,0xd65f03c0),'Exact original surface getter '+name)
     bindings['_native_legacy_surface_'+name]=address
+# Darwin 23 layer-default-surface ABI. The family loads IOCoreSurfaceRoot at
+# +0x1600 before startHardware, reads +0x1618 for selector 3, and releases
+# and clears that surface on stop. Qualify the original factory and ID getter.
+require(read(0xfffffff0045fc23b,18)==b'IOCoreSurfaceRoot\0' and
+        read(0xfffffff005787884,12)==bytes.fromhex('e83740f900010bf908014bf9') and
+        read(0xfffffff00578b3d8,16)==bytes.fromhex('080d4bf9080100f1e8179f1ae8020037') and
+        read(0xfffffff00578d094,8)==bytes.fromhex('000d4bf915570094') and
+        read(0xfffffff005788a70,24)==bytes.fromhex('000d4bf9080040f9081540f900013fd6e80f40f91f0d0bf9'),
+        'Original IOSurfaceRoot, selector 3 surface field and stop ownership')
+require(read(0xfffffff0057937f8,16)==bytes.fromhex('00014bf9a20356f8010080d22c3c0094') and
+        read(0xfffffff0057a28b4,12)==bytes.fromhex('903c00b010de44f900021fd6') and
+        read(0xfffffff005f339b8,8)==struct.pack('<Q',0xfffffff004baaa24) and
+        read(0xfffffff004baaa24,8)==bytes.fromhex('030080d2eaffff17') and
+        read(0xfffffff004b9ebb4,8)==bytes.fromhex('001040b9c0035fd6'),
+        'Original IOSurface factory and 32-bit surface ID getter')
+bindings['_native_legacy_surface_create']=0xfffffff004baaa24
+bindings['_native_legacy_surface_id']=0xfffffff004b9ebb4
 # The original display-refresh notification sender (self, timestamp, continuous host time, frame interval): it sends the six-word
 # vsync message (type 5) to every client entry queued at +5592, the tail queue that selector 72's registration (slot 208) fills at
 # +5512 + type*16. The platform subclass that normally calls it on each panel vblank is not part of this port.
