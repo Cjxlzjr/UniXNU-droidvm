@@ -48,8 +48,9 @@ for name in ['IOKit/IOTypes.h', 'IOKit/IOReturn.h', 'IOKit/IOBufferMemoryDescrip
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('#include "XnuMemoryFixture.h"\n')
 
+intel_host = os.uname().machine == 'x86_64'
 mmio_source = smmu / 'ArmSmmu4KMmio.c'
-if os.uname().machine == 'x86_64':
+if intel_host:
     # The software peer supplies its own ArmSmmu4KIo callbacks. Resolve the
     # unused hardware entry point in the host binary, but fail if it is called.
     mmio_source = out / 'ArmSmmu4KMmio-host.c'
@@ -82,8 +83,17 @@ core = []
 for name in ['NativeAdrenoMemory', 'NativeAdrenoSmmuMemory', 'NativeAdrenoVm', 'NativeAdrenoRing', 'NativeAdrenoSubmit',
              'NativeAdrenoUserClient', 'NativeAdrenoTimer', 'NativeAdrenoSmmuContext', 'NativeAdrenoGpuContext']:
     obj = out / (name + '.o')
+    source = kit / (name + '.cpp')
+    if intel_host and name in ('NativeAdrenoMemory', 'NativeAdrenoSubmit'):
+        # Hostsim owns software buffers and never submits to real MMIO here.
+        original = source.read_text()
+        barrier = '__asm__ volatile("dsb sy":::"memory")'
+        if original.count(barrier) != 1:
+            sys.exit(f'{source}: the pinned host-simulation barrier changed')
+        source = out / (name + '-host.cpp')
+        source.write_text(original.replace(barrier, '__atomic_thread_fence(__ATOMIC_SEQ_CST)'))
     subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O1', '-fPIC', '-I', includes, '-I', sim.parent, '-I', kit, '-I', smmu,
-                    '-I', ROOT / 'kits/AdrenoPM4', '-c', kit / (name + '.cpp'), '-o', obj], check=True)
+                    '-I', ROOT / 'kits/AdrenoPM4', '-c', source, '-o', obj], check=True)
     core.append(obj)
 shim_obj = out / 'host_iokit_shim.o'
 # Make both IOKit transport routes test the same watchdog timeout.
