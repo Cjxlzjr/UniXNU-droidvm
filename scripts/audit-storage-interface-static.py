@@ -28,6 +28,8 @@ import struct
 import subprocess
 import sys
 
+from clang_warning_flags import optional_virtual_specifier_warning
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'kits/NativePrelink'))
 import native_prelink as np
@@ -76,8 +78,8 @@ while index < len(arguments):
     index += 1
 command += ['-I', str(out / 'include'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
             '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-deprecated-declarations',
-            '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-unnecessary-virtual-specifier',
-            '-Wno-deprecated-enum-enum-conversion']
+            '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion']
+command += optional_virtual_specifier_warning(command[0])
 (out / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 r = subprocess.run(command, cwd=record['directory'], capture_output=True, text=True)
 (out / 'compile.log').write_text(r.stdout + r.stderr)

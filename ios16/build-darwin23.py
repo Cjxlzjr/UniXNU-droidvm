@@ -184,6 +184,19 @@ def stage_device(core, directory, gpu_stage='off'):
         ('3303014400', str(PINS['systemos']['bytes'])),
     ])
     (directory / 'scripts/build-verified-root-probe.py').write_text(probe)
+    # Keep the pinned core checkout intact. The device overlay carries only
+    # the option adjustment for inherited scripts on older Apple Clang.
+    warning_flags = runpy.run_path(str(DEVICE / 'scripts/clang_warning_flags.py'))
+    compiler = subprocess.check_output(
+        ['xcrun', '--sdk', 'iphoneos', '--find', 'clang++'], text=True).strip()
+    if not warning_flags['optional_virtual_specifier_warning'](compiler):
+        for relative, option in (
+            ('scripts/build-adreno740-accelerator.py', "'-Wno-unnecessary-virtual-specifier', "),
+            ('scripts/build-xnu-4k-baseline.sh', '-Wno-unnecessary-virtual-specifier '),
+        ):
+            source, staged = core / relative, directory / relative
+            staged.write_text(substitute(source, [(option, '')]))
+            staged.chmod(source.stat().st_mode & 0o777)
 
 
 class HybridBuild(base.Build):

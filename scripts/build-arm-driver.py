@@ -6,6 +6,8 @@ from pathlib import Path
 import struct
 import subprocess
 
+from clang_warning_flags import optional_virtual_specifier_warning
+
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('component', choices=['ArmVirtPlatform', 'ArmDTPlatform', 'ArmCpu', 'NativeAES', 'NativeVirtioBlock', 'NativeRamBlock', 'NativeMobileDisplay', 'NativeVirtioConsole', 'NativeLegacyDisplay', 'NativeGOPPresenter', 'NativeOfflineGPU', 'NativeOfflineAccelerator', 'NativeIOGPUProviderProbe', 'NativeUfs', 'NativeHidInput', 'NativeKeyStoreEvents', 'NativeAdreno'])
@@ -73,13 +75,7 @@ while index < len(arguments):
 command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                 '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-I', str(ROOT / '.cache/xnu-work/osfmk')])
-# Probe the positive form; older Clang may accept unknown -Wno-* silently.
-warning = 'unnecessary-virtual-specifier'
-probe = subprocess.run([command[0], '-Werror=unknown-warning-option', '-W' + warning,
-                        '-x', 'c++', '-fsyntax-only', '-'], input=b'',
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-if probe.returncode == 0:
-    command.append('-Wno-' + warning)
+command += optional_virtual_specifier_warning(command[0])
 if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:

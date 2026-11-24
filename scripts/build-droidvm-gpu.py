@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from clang_warning_flags import optional_virtual_specifier_warning
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:   # the iPadOS 27 board's kexts (ipados27/scripts/droidvm_kexts.py); the iPadOS 17 board has none
@@ -284,13 +286,14 @@ c = recipe('bsd/DEVELOPMENT/bsd_init.o.json')
 includes = ['-DDROIDVM_LEGACY_17=1', '-I', str(ADRENO), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/droidvm'),
             '-I', str(ROOT / '.cache/xnu-work/osfmk')]
 warnings = ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
-            '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier']
+            '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion']
+cxx_warnings = warnings + optional_virtual_specifier_warning(cxx['arguments'][0])
 sources = [ADRENO / 'NativeAdrenoSubmit.cpp', staged_memory, ADRENO / 'NativeAdrenoCpu.cpp']
 sources += [ADRENO / 'NativeAdrenoUserClient.cpp', staged, ROOT / 'kits/droidvm/DroidVMGpu.cpp']
 objects = []
 for source in sources:
     obj = OUT / (source.stem + '.o')
-    compile_with(cxx, source, obj, includes + warnings)
+    compile_with(cxx, source, obj, includes + cxx_warnings)
     objects.append(obj)
 pm4 = OUT / 'AdrenoPM4.kit.o'
 compile_with(c, ROOT / 'kits/AdrenoPM4/AdrenoPM4.c', pm4, includes + warnings)
@@ -300,7 +303,7 @@ accelerator = ROOT / 'build/adreno740-accelerator'
 if MACOS:
     macos_accelerator = OUT / 'DroidVMAccelerator.o'
     compile_with(cxx, ROOT / 'kits/droidvm/macos/DroidVMAccelerator.cpp', macos_accelerator,
-                 includes + warnings + ['-DDROIDVM_NATIVE_KEXT=1'])
+                 includes + cxx_warnings + ['-DDROIDVM_NATIVE_KEXT=1'])
     objects.append(macos_accelerator)
 else:
     print(subprocess.run(['python3', ROOT / 'scripts/build-adreno740-accelerator.py'], check=True, capture_output=True,
@@ -322,7 +325,7 @@ if missing:
 if GPU_KEXT:
     hook = OUT / 'DroidVMGpu.kext.o'
     compile_with(cxx, ROOT / 'kits/droidvm/DroidVMGpu.cpp', hook,
-                 includes + warnings + ['-DDROIDVM_NATIVE_KEXT=1', *(['-DDROIDVM_GPU_MACOS=1'] if MACOS else [])])
+                 includes + cxx_warnings + ['-DDROIDVM_NATIVE_KEXT=1', *(['-DDROIDVM_GPU_MACOS=1'] if MACOS else [])])
     kext_objects = [hook if p.name == 'DroidVMGpu.o' else
                     accelerator / 'NativeAdrenoAccelerator.o' if p.name == 'NativeAdrenoAccelerator.late.o' else p for p in objects]
     (OUT / 'kext-objects.json').write_text(json.dumps([str(p.relative_to(ROOT)) for p in kext_objects], indent=2) + '\n')

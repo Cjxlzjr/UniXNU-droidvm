@@ -20,6 +20,9 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+
+from clang_warning_flags import optional_virtual_specifier_warning
+
 ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'build/native-legacy-display';OUT.mkdir(parents=True,exist_ok=True)
 sys.path.insert(0,str(ROOT/'kits/XnuPrelink'))
 from native_prelink import macho,backed_offset,exports
@@ -235,8 +238,10 @@ while i<len(args):
     elif value=='-Xclang' and args[i+1].startswith('-W'):i+=1
     elif not value.startswith('-W'):cmd.append(value)
     i+=1
-cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list',
+virtual_specifier_warning = optional_virtual_specifier_warning(cmd[0])
+cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-c99-designator','-Wno-reorder-init-list',
       '-Wno-deprecated-enum-enum-conversion','-DDROIDVM_LEGACY_17=1','-I',str(ROOT/'.cache/xnu-work/osfmk')]
+cmd += virtual_specifier_warning
 run(cmd,cwd=r['directory'])
 virtio_gpu_sources=[ROOT/'kits/droidvm'/name for name in ('DroidVMVirtioGpu.cpp','DroidVMVirtioGpu3D.cpp','DroidVMVirtioGpuDisplay.cpp')]
 virtio_gpu_objects=[]
@@ -376,7 +381,7 @@ require(len(ionet_objects)==12,'IONetworkingFamily-177 has twelve sources')
 # IONetworkInterface.h lay out their vtables and members differently under __PRIVATE_SPI__, and a subclass compiled without it
 # has its overrides in the wrong slots (the family's own getHardwareAddress call then publishes a zero MAC).
 strict=['-D__PRIVATE_SPI__','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-macro-redefined','-Wno-c99-designator',
-        '-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-Wno-unnecessary-virtual-specifier','-isystem',str(ionet_include)]+ionet_flags
+        '-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-isystem',str(ionet_include)]+ionet_flags+virtual_specifier_warning
 ethernet_source=ROOT/'kits/droidvm/DroidVMVirtioEthernet.cpp'
 ethernet_obj=OUT/'DroidVMVirtioEthernet.o'
 run(iokit_command(ethernet_source,ethernet_obj)+strict,cwd=iokit_record['directory'])
