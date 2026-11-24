@@ -450,7 +450,8 @@ class HybridBuild(base.Build):
                 # The upstream cache instrument is qualified with the original 21H461 library.
                 # Give it that read-only test input without changing the active iPhone OS mount.
                 original = f"LIBRARY = ROOT / '.cache/firmware/target-volumes/os-mount/{QUARTZCORE_LIBRARY}'"
-                script = content.decode('utf-8')
+                from host_check_integration import patch_quartzcore_identity
+                script = patch_quartzcore_identity(content.decode('utf-8'))
                 if script.count(original) != 1:
                     raise ValueError(f'{name}: expected one mounted-library path')
                 script = script.replace(original, "LIBRARY = ROOT / 'build/turnip-host-inputs/default.metallib'")
