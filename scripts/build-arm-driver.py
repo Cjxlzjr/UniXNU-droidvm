@@ -72,7 +72,14 @@ while index < len(arguments):
     index += 1
 command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                 '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
-                '-Wno-unnecessary-virtual-specifier', '-I', str(ROOT / '.cache/xnu-work/osfmk')])
+                '-I', str(ROOT / '.cache/xnu-work/osfmk')])
+# Probe the positive form; older Clang may accept unknown -Wno-* silently.
+warning = 'unnecessary-virtual-specifier'
+probe = subprocess.run([command[0], '-Werror=unknown-warning-option', '-W' + warning,
+                        '-x', 'c++', '-fsyntax-only', '-'], input=b'',
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+if probe.returncode == 0:
+    command.append('-Wno-' + warning)
 if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:

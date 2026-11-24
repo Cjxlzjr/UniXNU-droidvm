@@ -361,13 +361,13 @@ class HybridBuild(base.Build):
         self.script('build-turnip-darwin.py', '--target', 'ios', logfile=self.logs / 'turnip-ios.log')
         self.script('build-turnip-darwin.py', '--target', 'host', logfile=self.logs / 'turnip-host.log')
         # Only the host smoke test should see host Homebrew headers.
-        host_checker = self.tree / 'scripts/check-turnip-darwin-host.py'
         prefix = subprocess.check_output(['brew', '--prefix'], env=self.env, text=True).strip()
         host_include = str(Path(prefix) / 'include')
         if host_include != '/opt/homebrew/include':
-            original_host_checker = host_checker.read_text()
-            host_checker.write_text(original_host_checker.replace(
-                "'/opt/homebrew/include'", repr(host_include)))
+            for name in ('check-turnip-darwin-host.py', 'check-turnip-pipeline-cache-host.py'):
+                checker = self.tree / 'scripts' / name
+                checker.write_text(checker.read_text().replace(
+                    "'/opt/homebrew/include'", repr(host_include)))
         host_status = self.script('check-turnip-darwin-host.py',
                                   logfile=self.logs / 'turnip-host-check.log', check=False)
         failed = sorted(p.stem for p in (self.tree / 'build/turnip-darwin-host').glob('*.log')

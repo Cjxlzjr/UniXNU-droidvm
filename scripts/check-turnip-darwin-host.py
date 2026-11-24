@@ -48,10 +48,28 @@ for name in ['IOKit/IOTypes.h', 'IOKit/IOReturn.h', 'IOKit/IOBufferMemoryDescrip
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('#include "XnuMemoryFixture.h"\n')
 
+mmio_source = smmu / 'ArmSmmu4KMmio.c'
+if os.uname().machine == 'x86_64':
+    # The software peer supplies its own ArmSmmu4KIo callbacks. Resolve the
+    # unused hardware entry point in the host binary, but fail if it is called.
+    mmio_source = out / 'ArmSmmu4KMmio-host.c'
+    mmio_source.write_text(r'''
+#include <stdlib.h>
+#include "ArmSmmu4KMmio.h"
+
+ArmSmmu4KStatus ArmSmmu4KBindMmio(ArmSmmu4KMmio *mapping, ArmSmmu4KIo *io)
+{
+    (void)mapping;
+    (void)io;
+    abort();
+}
+''')
+
 objects = []
 for stem in ['ArmSmmu4KContext', 'ArmSmmu4KProgram', 'ArmSmmu4KLive', 'ArmSmmu4KStreams', 'ArmSmmu4KMmio']:
     obj = out / (stem + '.o')
-    subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-fPIC', '-c', smmu / (stem + '.c'), '-o', obj], check=True)
+    source = mmio_source if stem == 'ArmSmmu4KMmio' else smmu / (stem + '.c')
+    subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-fPIC', '-I', smmu, '-c', source, '-o', obj], check=True)
     objects.append(obj)
 obj = out / 'AdrenoPM4.o'
 subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-fPIC', '-c', ROOT / 'kits/AdrenoPM4/AdrenoPM4.c', '-o', obj], check=True)

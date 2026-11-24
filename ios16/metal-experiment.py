@@ -39,6 +39,8 @@ PATCHES = {
          "    frontend = frontend.replace(default_language, '(NSUInteger)MTLLanguageVersion3_0;')"),
     ],
     "scripts/build-adreno-metal-bridge.py": [
+        ("'host': 'aarch64-apple-darwin'",
+         "'host': ('x86_64-apple-darwin' if os.uname().machine == 'x86_64' else 'aarch64-apple-darwin')"),
         ("IPHONEOS_DEPLOYMENT_TARGET='27.0' if args.target == 'ios27' else '17.0'",
          "IPHONEOS_DEPLOYMENT_TARGET='27.0' if args.target == 'ios27' else '16.0'"),
         ("target_dir = ROOT / 'build/m2v-target'\n",
