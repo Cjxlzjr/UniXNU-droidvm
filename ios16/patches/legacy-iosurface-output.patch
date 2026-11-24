@@ -1,0 +1,235 @@
+diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
+--- a/iokit/Kernel/IOUserClient.cpp
++++ b/iokit/Kernel/IOUserClient.cpp
+@@ -51,6 +51,7 @@
+ #include <sys/code_signing.h>
+ 
+ #include <mach/sdt.h>
++#include <pexpert/pexpert.h>
+ #include <os/hash.h>
+ 
+ #include <libkern/amfi/amfi.h>
+@@ -6446,6 +6447,159 @@
+ 	panic("wrong externalMethod for IOUserClient2022");
+ }
+ 
++namespace {
++
++constexpr uint32_t kIOSurfaceRelease = 1;
++constexpr uint32_t kIOSurfaceLimits = 13;
++constexpr uint32_t kIOS16LimitsSize = 0x18;
++constexpr uint32_t kDarwin23LimitsSize = 0x28;
++constexpr uint32_t kIOS16SurfaceSize = 0xa68;
++constexpr uint32_t kDarwin23SurfaceSize = 0xc68;
++constexpr uint32_t kMaxSurfacePlanes = 20;
++constexpr uint32_t kIOS16HeaderSize = 0x68;
++constexpr uint32_t kDarwin23HeaderSize = 0x88;
++constexpr uint32_t kIOS16PlaneSize = 0x80;
++constexpr uint32_t kDarwin23PlaneSize = 0x98;
++
++static_assert(kIOS16HeaderSize + kMaxSurfacePlanes * kIOS16PlaneSize == kIOS16SurfaceSize);
++static_assert(kDarwin23HeaderSize + kMaxSurfacePlanes * kDarwin23PlaneSize == kDarwin23SurfaceSize);
++
++struct IOSurfaceWord {
++	uint32_t nativeOffset;
++	uint32_t legacyOffset;
++};
++
++// IOSurface.framework's getters in 20H392 and 21H461 use offsets
++// relative to client+0x68. Darwin 23 widened these six header fields.
++constexpr IOSurfaceWord kSurfaceHeaderWords[] = {
++	{0x20, 0x1c}, // allocation
++	{0x28, 0x20}, // width
++	{0x30, 0x24}, // height
++	{0x38, 0x28}, // bytes per row
++	{0x40, 0x2c}, // base offset
++	{0x50, 0x34}, // data cache flush length
++};
++
++template <typename T>
++T
++readIOSurfaceValue(const uint8_t *source, uint32_t offset)
++{
++	T value;
++	memcpy(&value, source + offset, sizeof(value));
++	return value;
++}
++
++void
++writeIOSurfaceWord(uint8_t *destination, uint32_t offset, uint32_t value)
++{
++	memcpy(destination + offset, &value, sizeof(value));
++}
++
++void
++convertIOSurfaceLimits(const uint8_t *source, uint8_t *destination)
++{
++	memcpy(destination, source, 8); // offset and row alignment masks
++	for (uint32_t i = 0; i < 3; ++i) {
++		const uint64_t maximum = readIOSurfaceValue<uint64_t>(source, 8 + i * 8);
++		writeIOSurfaceWord(destination, 8 + i * 4,
++		    maximum > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(maximum));
++	}
++	memcpy(destination + 0x14, source + 0x20, 4); // flags and ABI version
++}
++
++bool
++convertIOSurfaceRecord(const uint8_t *source, uint8_t *destination)
++{
++	const uint32_t planeCount = readIOSurfaceValue<uint32_t>(source, 0x58);
++	if (planeCount > kMaxSurfacePlanes) {
++		return false;
++	}
++
++	uint32_t headerWords[sizeof(kSurfaceHeaderWords) / sizeof(kSurfaceHeaderWords[0])];
++	for (uint32_t i = 0; i < sizeof(headerWords) / sizeof(headerWords[0]); ++i) {
++		const uint64_t value = readIOSurfaceValue<uint64_t>(source, kSurfaceHeaderWords[i].nativeOffset);
++		if (value > UINT32_MAX) {
++			return false;
++		}
++		headerWords[i] = static_cast<uint32_t>(value);
++	}
++
++	// A non-planar surface still returns plane 0 metadata, including extended
++	// pixels. Six 64-bit words precede the common element and tile layout.
++	const uint32_t planes = planeCount ? planeCount : 1;
++	uint32_t planeWords[kMaxSurfacePlanes][6];
++	for (uint32_t p = 0; p < planes; ++p) {
++		const uint8_t *plane = source + kDarwin23HeaderSize + p * kDarwin23PlaneSize;
++		for (uint32_t i = 0; i < 6; ++i) {
++			const uint64_t value = readIOSurfaceValue<uint64_t>(plane, i * 8);
++			if (value > UINT32_MAX) {
++				return false;
++			}
++			planeWords[p][i] = static_cast<uint32_t>(value);
++		}
++	}
++
++	bzero(destination, kIOS16SurfaceSize);
++	memcpy(destination, source, 0x1c); // task mappings and surface ID
++	for (uint32_t i = 0; i < sizeof(headerWords) / sizeof(headerWords[0]); ++i) {
++		writeIOSurfaceWord(destination, kSurfaceHeaderWords[i].legacyOffset, headerWords[i]);
++	}
++	memcpy(destination + 0x30, source + 0x48, 4); // pixel format
++	writeIOSurfaceWord(destination, 0x38, planeCount);
++	memcpy(destination + 0x40, source + 0x60, 8); // element geometry and cache mode
++	destination[0x4c] = source[0x5c]; // subsampling
++	destination[0x4d] = source[0x6c]; // prohibit use count
++	memcpy(destination + 0x50, source + 0x70, 0x18); // parent, slices, trace ID and protection
++
++	for (uint32_t p = 0; p < planes; ++p) {
++		const uint8_t *plane = source + kDarwin23HeaderSize + p * kDarwin23PlaneSize;
++		uint8_t *legacyPlane = destination + kIOS16HeaderSize + p * kIOS16PlaneSize;
++		memcpy(legacyPlane, planeWords[p], sizeof(planeWords[p]));
++		memcpy(legacyPlane + 0x18, plane + 0x30, 0x68);
++	}
++	return true;
++}
++
++uint32_t
++legacyIOSurfaceNativeSize(uint32_t selector, const IOExternalMethodArguments &args,
++    const IOExternalMethodDispatch2022 &dispatch)
++{
++	if (!args.structureOutput || args.structureOutputDescriptor ||
++	    args.structureVariableOutputData || args.asyncWakePort ||
++	    args.version != kIOExternalMethodArgumentsCurrentVersion ||
++	    args.selector != selector || dispatch.checkScalarOutputCount != 0) {
++		return 0;
++	}
++
++	switch (selector) {
++	case kIOSurfaceLimits:
++		if (args.structureOutputSize == kIOS16LimitsSize &&
++		    dispatch.checkStructureOutputSize == kDarwin23LimitsSize) {
++			return kDarwin23LimitsSize;
++		}
++		break;
++	case 0:    // Create
++	case 4:    // Lookup
++	case 6:    // Legacy plane wrapper
++	case 7:    // Legacy accelerator wrapper
++	case 0x22: // LookupFromMachPort
++		if (args.structureOutputSize == kIOS16SurfaceSize &&
++		    dispatch.checkStructureOutputSize == kDarwin23SurfaceSize) {
++			return kDarwin23SurfaceSize;
++		}
++		break;
++	}
++	return 0;
++}
++
++} // anonymous namespace
++
++extern "C" {
++uint32_t native_ios16_iosurface_calls[0x23];
++uint32_t native_ios16_iosurface_converted[0x23];
++uint32_t native_ios16_iosurface_status[0x23];
++}
++
+ IOReturn
+ IOUserClient2022::dispatchExternalMethod(uint32_t selector, IOExternalMethodArgumentsOpaque *arguments,
+     const IOExternalMethodDispatch2022 dispatchArray[], size_t dispatchArrayCount,
+@@ -6485,7 +6639,62 @@
+ 	if ((kIOUCVariableStructureSize != count)
+ 	    && (count != ((args->structureOutputDescriptor)
+ 	    ? args->structureOutputDescriptor->getLength() : args->structureOutputSize))) {
+-		return kIOReturnBadArgument;
++		const uint32_t nativeSize = legacyIOSurfaceNativeSize(selector, *args, *dispatch);
++		uint32_t enabled = 0;
++		if (!nativeSize || target != this ||
++		    strcmp(getMetaClass()->getClassName(), "IOSurfaceRootUserClient") ||
++		    !PE_parse_boot_argn("droidvm-ios16-iosurface", &enabled, sizeof(enabled)) || enabled != 1) {
++			return kIOReturnBadArgument;
++		}
++
++		__atomic_fetch_add(&native_ios16_iosurface_calls[selector], 1, __ATOMIC_RELAXED);
++		auto *record = static_cast<uint8_t *>(IOMallocZeroData(nativeSize));
++		if (!record) {
++			__atomic_store_n(&native_ios16_iosurface_status[selector], kIOReturnNoMemory, __ATOMIC_RELAXED);
++			return kIOReturnNoMemory;
++		}
++
++		// Replay the same dispatch with only the output buffer changed.
++		// Input, entitlement and handler checks remain native.
++		IOExternalMethodArguments nativeArgs = *args;
++		nativeArgs.structureOutput = record;
++		nativeArgs.structureOutputSize = nativeSize;
++		err = dispatchExternalMethod(selector,
++		    reinterpret_cast<IOExternalMethodArgumentsOpaque *>(&nativeArgs),
++		    dispatchArray, dispatchArrayCount, target, reference);
++		if (err == kIOReturnSuccess) {
++			auto *output = static_cast<uint8_t *>(args->structureOutput);
++			if (nativeArgs.structureOutputSize != nativeSize) {
++				err = kIOReturnBadArgument;
++			} else if (selector == kIOSurfaceLimits) {
++				convertIOSurfaceLimits(record, output);
++			} else if (!convertIOSurfaceRecord(record, output)) {
++				err = kIOReturnOverrun;
++			}
++
++			if (err == kIOReturnSuccess) {
++				__atomic_fetch_add(&native_ios16_iosurface_converted[selector], 1, __ATOMIC_RELAXED);
++			} else if (selector != kIOSurfaceLimits &&
++			    readIOSurfaceValue<uint64_t>(record, 0) != UINT64_MAX) {
++				// A successful create or lookup added a reference for this
++				// client. Undo it if the legacy reply cannot represent it.
++				// The -1 mapping sentinel means the client already owned it.
++				const uint64_t surfaceID = readIOSurfaceValue<uint32_t>(record, 0x18);
++				if (surfaceID) {
++					IOExternalMethodArguments releaseArgs = {};
++					releaseArgs.version = kIOExternalMethodArgumentsCurrentVersion;
++					releaseArgs.selector = kIOSurfaceRelease;
++					releaseArgs.scalarInput = &surfaceID;
++					releaseArgs.scalarInputCount = 1;
++					dispatchExternalMethod(kIOSurfaceRelease,
++					    reinterpret_cast<IOExternalMethodArgumentsOpaque *>(&releaseArgs),
++					    dispatchArray, dispatchArrayCount, target, reference);
++				}
++			}
++		}
++		IOFreeData(record, nativeSize);
++		__atomic_store_n(&native_ios16_iosurface_status[selector], err, __ATOMIC_RELAXED);
++		return err;
+ 	}
+ 
+ 	if (args->asyncWakePort && !dispatch->allowAsync) {
