@@ -93,6 +93,8 @@ jobs:
           brew install llvm lld cmake ninja unifdef mtools dtc age openssl@3 bison flex glslang vulkan-headers shaderc spirv-tools
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          llvm_bin="$(brew --prefix llvm)/bin"
+          test "$("$llvm_bin/llvm-cxxfilt" --no-strip-underscore _ZN20IOBlockStorageDevice5probeEv)" = 'IOBlockStorageDevice::probe()'
           brew_include="$(brew --prefix)/include"
           command -v glslc || {
             echo '::error::Missing glslc from shaderc, required by the Turnip host smoke test'; exit 1;

@@ -38,6 +38,20 @@ PATCHES = {
          "        raise SystemExit(f'{frontend_source}: expected one Metal 3.1 default')\n"
          "    frontend = frontend.replace(default_language, '(NSUInteger)MTLLanguageVersion3_0;')"),
     ],
+    "scripts/check-turnip-pipeline-cache-host.py": [
+        ("def binary_identity(path):",
+         "def binary_identity(path, expected_cpu=(0x0100000c, 0)):"),
+        ("    if cpu != 0x100000c or subtype != 0:\n        raise SystemExit('Expected ordinary ARM64 subtype 0: ' + str(path))",
+         "    if (cpu, subtype) != expected_cpu:\n        raise SystemExit(f'{path}: expected Mach-O CPU/subtype {expected_cpu}, got {(cpu, subtype)}')"),
+        ("env.update(DYLD_INSERT_LIBRARIES=str(SHIM), MESA_SHADER_CACHE_DISABLE='true', MESA_LOG='')\nreport = dict(",
+         "env.update(DYLD_INSERT_LIBRARIES=str(SHIM), MESA_SHADER_CACHE_DISABLE='true', MESA_LOG='')\n"
+         "host_cpu = {'arm64': (0x0100000c, 0), 'x86_64': (0x01000007, 3)}[os.uname().machine]\n"
+         "report = dict("),
+        ("host=binary_identity(LIBRARY),",
+         "host=binary_identity(LIBRARY, host_cpu),"),
+        ("ROOT / 'build/mesa-tu-ios/src/freedreno/vulkan/libvulkan_freedreno.dylib'",
+         "ROOT / 'build/mesa-tu-ios16/src/freedreno/vulkan/libvulkan_freedreno.dylib'"),
+    ],
     "scripts/build-adreno-metal-bridge.py": [
         ("'host': 'aarch64-apple-darwin'",
          "'host': ('x86_64-apple-darwin' if os.uname().machine == 'x86_64' else 'aarch64-apple-darwin')"),

@@ -184,6 +184,31 @@ def stage_device(core, directory, gpu_stage='off'):
         ('3303014400', str(PINS['systemos']['bytes'])),
     ])
     (directory / 'scripts/build-verified-root-probe.py').write_text(probe)
+    # Stage the canonical script; the pinned core maps the legacy name to it.
+    bindings = 'scripts/build-virtio-mmio-bindings.py'
+    binding_source = substitute(core / bindings, [
+        ("demangled = subprocess.check_output(['xcrun', 'c++filt'], input='\\n'.join(n[1:] for n in all_names) + '\\n', text=True).splitlines()\n"
+         "readable = dict(zip(all_names, demangled))",
+         "# Strip the Mach-O prefix exactly once and pin the Itanium demangling mode.\n"
+         "demangled = subprocess.check_output(\n"
+         "    ['llvm-cxxfilt', '--no-strip-underscore'],\n"
+         "    input='\\n'.join(n[1:] for n in all_names) + '\\n', text=True,\n"
+         ").splitlines()\n"
+         "if len(demangled) != len(all_names):\n"
+         "    raise SystemExit('Storage ABI demangler returned an unexpected number of symbols')\n"
+         "readable = dict(zip(all_names, demangled))"),
+        ("        if not own or (row['slot'] not in (0, 1) and readable[actual].split('::', 1)[1] != readable[expected].split('::', 1)[1]):\n"
+         "            raise SystemExit('Concrete subclass dispatch mismatch at slot ' + str(row['slot']))",
+         "        _, actual_separator, actual_method = readable[actual].partition('::')\n"
+         "        _, expected_separator, expected_method = readable[expected].partition('::')\n"
+         "        same_signature = actual_separator and expected_separator and actual_method == expected_method\n"
+         "        if not own or (row['slot'] not in (0, 1) and not same_signature):\n"
+         "            raise SystemExit(\n"
+         "                f\"Concrete subclass dispatch mismatch at slot {row['slot']}: \"\n"
+         "                f\"{actual} ({readable[actual]}) vs {expected} ({readable[expected]})\"\n"
+         "            )"),
+    ])
+    (directory / bindings).write_text(binding_source)
     # Keep the pinned core checkout intact. The device overlay carries only
     # the option adjustment for inherited scripts on older Apple Clang.
     warning_flags = runpy.run_path(str(DEVICE / 'scripts/clang_warning_flags.py'))
