@@ -28,6 +28,7 @@ extension_overlay = runpy.run_path(str(IOS / 'ci33-extension-overlay.py'))
 EXTENSION_PATCH = extension_overlay['TARGET']
 SWAP_BOOT_ARG = 'droidvm-ios16-swap=1'
 IOSURFACE_BOOT_ARG = 'droidvm-ios16-iosurface=1'
+NETWORK_BOOT_ARG = 'droidvm-ios16-net=1'
 SWAP_SYMBOLS = {'_native_ios16_swap_converted', '_native_ios16_swap_rejected', '_native_ios16_swap_unmapped',
                 '_native_ios16_swap_reject_masks_ready', '_native_ios16_swap_reject_masks',
                 '_native_ios16_swap_surface_diag'}
@@ -98,6 +99,7 @@ def derived_board(text, gpu_stage='off'):
     if gpu_stage == 'metal':
         args.insert(0, SWAP_BOOT_ARG)
         args.insert(1, IOSURFACE_BOOT_ARG)
+        args.insert(2, NETWORK_BOOT_ARG)
     tool_args = original['payload']['adt']['tool_args'] + ['--identity-tree', 'build/iphone-x-identity.im4p']
     for key, value in (
         ('fetch', '["KernelCache"]'),
@@ -160,6 +162,8 @@ def verify_metal_kernel(image):
         raise ValueError(f'The Metal kernel is missing default surface telemetry: {sorted(missing)}')
     if missing := IOSURFACE_SYMBOLS - names:
         raise ValueError(f'The Metal kernel is missing IOSurface ABI telemetry: {sorted(missing)}')
+    if '_droidvm_ios16_ethernet_registration_status' not in names:
+        raise ValueError('The Metal kernel is missing the iOS 16 Ethernet registration result')
 
 
 def stage_device(core, directory, gpu_stage='off'):
@@ -327,7 +331,8 @@ class HybridBuild(base.Build):
         kernel_step = 'kernel'
         if self.gpu_stage == 'metal':
             kernel_inputs = (EXTENSION_PATCH, Path('patches/xnu') / IOSURFACE_PATCH.name,
-                             'package/Ios16SwapRecord.h', 'package/LegacyDisplayProbe.cpp')
+                             'package/Ios16SwapRecord.h', 'package/LegacyDisplayProbe.cpp',
+                             'package/DroidVMVirtioEthernet.cpp', 'package/DroidVMVirtioNetIf.cpp')
             revision = hashlib.sha256()
             for source in kernel_inputs:
                 revision.update(bytes.fromhex(base.sha256(self.device / source)))
@@ -605,8 +610,10 @@ class HybridBuild(base.Build):
             boot = next(entry for entry in config['entry'] if entry['id'] == config['boot']['default'])
             if config['driver'] != [{'path': 'Payloads/DarwinBoot.efi'}] or boot['path'] != 'Payloads/kernel.macho':
                 raise ValueError('The finished FAT does not boot through the checked EFI and kernel')
-            if self.gpu_stage == 'metal' and SWAP_BOOT_ARG not in boot['args'].split():
-                raise ValueError('The finished Metal FAT does not enable the iOS 16 SwapEnd adapter')
+            if self.gpu_stage == 'metal':
+                required_args = {SWAP_BOOT_ARG, IOSURFACE_BOOT_ARG, NETWORK_BOOT_ARG}
+                if missing := required_args - set(boot['args'].split()):
+                    raise ValueError(f'The finished Metal FAT lacks required boot arguments: {sorted(missing)}')
             return {name: {'bytes': (stage / name).stat().st_size, 'sha256': base.sha256(stage / name)} for name in paths}
 
 

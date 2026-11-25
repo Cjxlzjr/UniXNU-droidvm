@@ -59,7 +59,7 @@ extern "C" {
 volatile uint32_t droidvm_net_if_stage;
 volatile int droidvm_net_family_status = -1;
 volatile uint64_t droidvm_net_controller;
-IOService *droidvm_ethernet_create(const uint8_t mac[6], IOService *provider);
+IOService *droidvm_ethernet_create(const uint8_t mac[6], IOService *provider, IOService *selfNamingStack);
 IOService *droidvm_wifi_create(const uint8_t mac[6], IOService *provider);
 void droidvm_ethernet_input(IOService *controller, const void *frame, unsigned length);
 int droidvm_net_if_attach(const uint8_t mac[6]);
@@ -125,14 +125,19 @@ int droidvm_net_if_attach(const uint8_t mac[6]) {
     droidvm_net_family_status = 0;   // registered as the kext loaded
 #endif
     droidvm_net_if_stage = 2;
+    IOService *selfNamingStack = nullptr;
 #if !DROIDVM_NET_APPLE_FAMILY
-    if (!droidvm_net_start_service("IONetworkStack", resources)) return -1;
+    IOService *stack = droidvm_net_start_service("IONetworkStack", resources);
+    if (!stack) return -1;
+    uint32_t selfName = 0;
+    if (PE_parse_boot_argn("droidvm-ios16-net", &selfName, sizeof(selfName)) && selfName == 1)
+        selfNamingStack = stack;
 #endif
     droidvm_net_if_stage = 3;
     IOService *nub = droidvm_net_nub("droidvm-net", resources);
     if (!nub) return -1;
     droidvm_net_if_stage = 4;
-    droidvm_net_nic = droidvm_ethernet_create(mac, nub);
+    droidvm_net_nic = droidvm_ethernet_create(mac, nub, selfNamingStack);
     if (!droidvm_net_nic) return -1;
     droidvm_net_controller = (uintptr_t)droidvm_net_nic;
     droidvm_net_if_stage = 5;

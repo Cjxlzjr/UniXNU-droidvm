@@ -10,9 +10,11 @@
 // controllers') is staged for a late call, made by DroidVMVirtioNetIf.cpp together with the family's own.
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
+#include <IOKit/IOKitKeys.h>
 #include <IOKit/network/IOEthernetController.h>
 #include <IOKit/network/IOEthernetInterface.h>
 #include <IOKit/network/IONetworkMedium.h>
+#include <IOKit/network/IONetworkStack.h>
 #include <IOKit/network/IOOutputQueue.h>
 #include <kern/clock.h>
 #include <kern/thread_call.h>
@@ -23,7 +25,7 @@
 
 extern "C" {
 int droidvm_net_tx_frame(const void *frame, unsigned length);
-IOService *droidvm_ethernet_create(const uint8_t mac[6], IOService *provider);
+IOService *droidvm_ethernet_create(const uint8_t mac[6], IOService *provider, IOService *selfNamingStack);
 void droidvm_ethernet_input(IOService *controller, const void *frame, unsigned length);
 IOService *droidvm_wifi_create(const uint8_t mac[6], IOService *provider);
 // For the host rig (peek.py): the stack's calls into the controller, and the interface as BSD sees it (unit + 1 once IONetworkStack
@@ -31,6 +33,7 @@ IOService *droidvm_wifi_create(const uint8_t mac[6], IOService *provider);
 // app's br-wifi proxy shows them on the phone's wlan0.
 volatile uint32_t droidvm_ethernet_enables, droidvm_ethernet_disables, droidvm_ethernet_outputs, droidvm_ethernet_inputs;
 volatile uint32_t droidvm_ethernet_unit, droidvm_ethernet_ifflags, droidvm_ethernet_builtin;
+volatile IOReturn droidvm_ios16_ethernet_registration_status = kIOReturnNotReady;
 }
 
 #define DROIDVM_NET_FRAME 1514
@@ -45,11 +48,14 @@ class DroidVMVirtioEthernet : public IOEthernetController {
     IOEthernetInterface *interface;
     IONetworkMedium *medium;
     IOLock *transmitLock;
+    IOService *selfNamingStack;
     bool enabled;
     uint8_t transmitFrame[DROIDVM_NET_FRAME];
 
+    IOReturn registerBuiltInInterface(IOService *stack);
+
 public:
-    bool initWithAddress(const uint8_t mac[6]);
+    bool initWithAddress(const uint8_t mac[6], IOService *stack);
     void free() override;
     bool start(IOService *provider) override;
     IOReturn getHardwareAddress(IOEthernetAddress *addressOut) override;
@@ -65,9 +71,11 @@ public:
 
 OSDefineMetaClassAndStructors(DroidVMVirtioEthernet, IOEthernetController)
 
-bool DroidVMVirtioEthernet::initWithAddress(const uint8_t mac[6]) {
+bool DroidVMVirtioEthernet::initWithAddress(const uint8_t mac[6], IOService *stack) {
     if (!super::init(nullptr)) return false;
     memcpy(address.bytes, mac, kIOEthernetAddressSize);
+    selfNamingStack = stack;
+    if (stack && !setProperty("IOSelfNamed", kOSBooleanTrue)) return false;
     transmitLock = IOLockAlloc();
     return transmitLock != nullptr;
 }
@@ -88,10 +96,55 @@ bool DroidVMVirtioEthernet::start(IOService *provider) {
     bool published = medium && media && IONetworkMedium::addMedium(media, medium) && publishMediumDictionary(media);
     OSSafeReleaseNULL(media);
     if (!published || !setCurrentMedium(medium)) return false;
-    if (!attachInterface((IONetworkInterface **)&interface, true)) return false;
+    IOService *stack = selfNamingStack;
+    selfNamingStack = nullptr;
+    if (!attachInterface((IONetworkInterface **)&interface, stack == nullptr)) return false;
     droidvm_ethernet_builtin = interface->getProperty(kIOBuiltin) == kOSBooleanTrue;
+    if (stack) {
+        IOReturn status = registerBuiltInInterface(stack);
+        droidvm_ios16_ethernet_registration_status = status;
+        if (status != kIOReturnSuccess) {
+            IOLog("DroidVMVirtioEthernet: built-in en0 registration failed %#x\n", static_cast<unsigned>(status));
+            detachInterface(interface, true);
+            return false;
+        }
+    }
     IOLog("DroidVMVirtioEthernet: interface attached, IOBuiltin %u\n", droidvm_ethernet_builtin);
     return true;
+}
+
+IOReturn DroidVMVirtioEthernet::registerBuiltInInterface(IOService *stack) {
+    if (!droidvm_ethernet_builtin) return kIOReturnBadArgument;
+
+    // The native network-boot path also attaches its interface from the
+    // kernel. Register only the device this controller just attached.
+    // Unit 0 is the fixed built-in Ethernet service in the iOS 16 Data seed.
+    const uint64_t interfaceID = interface->getRegistryEntryID();
+    OSData *id = OSData::withBytes(&interfaceID, sizeof(interfaceID));
+    OSDictionary *properties = OSDictionary::withCapacity(3);
+    OSNumber *unit = OSNumber::withNumber(0ULL, 32);
+    OSNumber *command = OSNumber::withNumber(static_cast<uint64_t>(kIONetworkStackRegisterInterfaceWithUnit), 32);
+    IOReturn result = kIOReturnNoMemory;
+    if (properties && id && unit && command &&
+        properties->setObject(kIORegistryEntryIDKey, id) &&
+        properties->setObject(kIOInterfaceUnit, unit) &&
+        properties->setObject(kIONetworkStackUserCommandKey, command)) {
+        interface->registerService(kIOServiceSynchronous);
+        result = stack->setProperties(properties);
+        if (result == kIOReturnSuccess) {
+            if (ifnet_t ifp = interface->getIfnet()) {
+                droidvm_ethernet_unit = ifnet_unit(ifp) + 1;
+                droidvm_ethernet_ifflags = static_cast<uint32_t>(ifnet_flags(ifp));
+            } else {
+                result = kIOReturnNotReady;
+            }
+        }
+    }
+    OSSafeReleaseNULL(command);
+    OSSafeReleaseNULL(unit);
+    OSSafeReleaseNULL(id);
+    OSSafeReleaseNULL(properties);
+    return result;
 }
 
 IOReturn DroidVMVirtioEthernet::getHardwareAddress(IOEthernetAddress *addressOut) {
@@ -150,9 +203,9 @@ void DroidVMVirtioEthernet::input(const void *frame, unsigned length) {
     interface->inputPacket(packet, length);
 }
 
-IOService *droidvm_ethernet_create(const uint8_t mac[6], IOService *provider) {
+IOService *droidvm_ethernet_create(const uint8_t mac[6], IOService *provider, IOService *selfNamingStack) {
     DroidVMVirtioEthernet *controller = OSTypeAlloc(DroidVMVirtioEthernet);
-    if (!controller || !controller->initWithAddress(mac)) {
+    if (!controller || !controller->initWithAddress(mac, selfNamingStack)) {
         OSSafeReleaseNULL(controller);
         return nullptr;
     }
