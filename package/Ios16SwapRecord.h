@@ -30,6 +30,8 @@ constexpr Field kFields[] = {
     {0x10c, 0x154, 4},      // Companion layer mask
     {0x114, 0x15c, 4 * 4},  // Four layer transforms, same enum
     {0x134, 0x17c, 4},      // Per-swap state cleared in SwapBegin
+    {0x250, 0x298, 4 * 4},  // Update rectangle: signed x, y, width and height
+    {0x260, 0x2cc, 1},      // Update rectangle validity
     {0x2ca, 0x336, 1},      // Layer option bit 5
     {0x2cc, 0x338, 1},      // Layer option bit 31
     {0x2e3, 0x34f, 1},      // Layer option bit 6
